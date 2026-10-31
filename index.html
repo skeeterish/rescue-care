@@ -287,6 +287,7 @@ function taskCard(o, kind, entry) {
         h('div', { class: 'muted small' }, [fmtWhen(o.scheduled_at), o.location_name, who].filter(Boolean).join(' \u00B7 '))),
       right),
     o.instruction_snapshot ? h('div', { class: 'instr' }, o.instruction_snapshot) : null,
+    o.plan_amount != null && kind !== 'done' ? h('div', { class: 'muted small' }, `Planned: ${o.plan_amount}${o.plan_unit ? ' ' + o.plan_unit : ''}`) : null,
     summary ? h('div', { class: 'instr' }, summary,
       h('div', { class: 'muted small' }, `Logged by ${state.people[entry.completed_by] || 'unknown'} at ${fmtTime(entry.logged_at)}`)) : null,
     alerts.map((a) => h('div', { class: 'alert' }, '\u26A0 ' + a)));
@@ -296,8 +297,8 @@ function taskCard(o, kind, entry) {
 function openLogModal(o, existing = null) {
   const outcome = h('select', {}, OUTCOMES.map((x) => h('option', { value: x.value, selected: !!existing && existing.outcome === x.value }, x.label)));
   const amount = h('input', { type: 'number', step: 'any', inputmode: 'decimal', placeholder: 'Amount (optional)',
-    value: existing && existing.detail_value != null ? existing.detail_value : null });
-  const unit = h('input', { type: 'text', placeholder: 'Unit, e.g. cups (optional)', value: existing ? existing.detail_unit : null });
+    value: existing ? (existing.detail_value ?? null) : (o.plan_amount ?? null) });
+  const unit = h('input', { type: 'text', placeholder: 'Unit, e.g. cups (optional)', value: existing ? existing.detail_unit : (o.plan_unit ?? null) });
   const notes = h('textarea', { rows: 3, placeholder: 'Notes (optional; required if skipped)' }, existing ? existing.notes : null);
   const err = h('p', { class: 'error' });
   const close = () => overlay.remove();
@@ -455,7 +456,7 @@ function animalActions(a, an) {
 const DAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']];
 async function getTaskTypes() {
   if (!state.taskTypes) {
-    const r = await db.from('task_types').select('id, task_name, category, requires_animal').eq('active', true).order('task_name');
+    const r = await db.from('task_types').select('id, task_name, category, care_plan_category, requires_animal').eq('active', true).order('task_name');
     state.taskTypes = r.data || [];
   }
   return state.taskTypes;
@@ -528,21 +529,35 @@ async function showFacility() {
 }
 
 // ---------- care plans ----------
-function carePlansBlock(a, live, drafts, admin) {
+function carePlansBlock(a, live, drafts, admin, types = []) {
+  const typeFor = (cat) => (types.find((t) => t.requires_animal && t.care_plan_category === cat) || {}).id || '';
+  const medical = (id) => (types.find((t) => t.id === id) || {}).category === 'Medical';
   const add = () => openForm({ title: `New care plan: ${a.animal_name}`, submit: 'Save plan',
     fields: [
-      { key: 'cat', label: 'Category', type: 'select', required: true, options: opts(['Feeding', 'Exercise', 'Medication', 'Handling', 'Kennel', 'Other']) },
+      { key: 'cat', label: 'Category', type: 'select', required: true, options: opts(['Feeding', 'Exercise', 'Medication', 'Handling', 'Kennel', 'Other']),
+        onchange: (val, els) => { els.tasktype.value = typeFor(val); els.fresh.querySelector('input').checked = medical(els.tasktype.value); } },
       { key: 'instr', label: 'Instructions (a new Feeding plan replaces the current one and takes over its tasks)', type: 'textarea', required: true },
-      { key: 'amount', label: 'Amount (optional, e.g. 1.5)', type: 'number' }, { key: 'unit', label: 'Unit (optional, e.g. cups)' },
-      { key: 'times', label: 'Times per day (optional)', type: 'number' },
+      { key: 'amount', label: 'Amount per task (optional, e.g. 1.5): shown to volunteers and pre-filled when logging', type: 'number' },
+      { key: 'unit', label: 'Unit (optional, e.g. cups, tablets)' },
+      { key: 'days', label: 'Lasts how many days? (optional; leave empty to continue until ended)', type: 'number' },
       { key: 'src', label: 'Source', type: 'select', options: opts(['Rescue Decision', 'Vet Recommendation']) },
-      { key: 'draft', label: 'Approval', type: 'checks', options: [{ value: 'draft', label: 'Save as draft (approve later)' }] },
+      { key: 'tasktype', label: 'Create tasks from this plan: task type (leave empty to keep the current tasks)', type: 'select',
+        options: [{ value: '', label: "(don't create tasks)" }, ...types.filter((t) => t.requires_animal).map((t) => ({ value: t.id, label: t.task_name }))],
+        onchange: (val, els) => { els.fresh.querySelector('input').checked = medical(val); } },
+      { key: 'who', label: 'Assigned to', type: 'select', options: peopleOptions() },
+      { key: 't1', label: 'Time of day', type: 'time' }, { key: 't2', label: 'Also at (optional)', type: 'time' },
+      { key: 't3', label: 'And at (optional)', type: 'time' }, { key: 't4', label: 'And at (optional)', type: 'time' },
+      { key: 'fresh', label: 'If starting today', type: 'checks', options: [{ value: 'day', label: 'Start from beginning of day' }] },
+      { key: 'draft', label: 'Approval', type: 'checks', options: [{ value: 'draft', label: 'Save as draft (approve later; no tasks until then)' }] },
       { key: 'notes', label: 'Notes', type: 'textarea' }],
     onSubmit: async (v) => {
+      const times = [...new Set([v.t1, v.t2, v.t3, v.t4].filter(Boolean))];
+      if (!!v.tasktype !== times.length > 0) return { message: 'To create tasks, choose a task type and at least one time (or clear both).' };
       const r = await db.rpc('save_care_plan', { p_animal: a.animal_id, p_category: v.cat, p_instructions: v.instr,
-        p_amount: v.amount == null ? null : Number(v.amount), p_unit: v.unit, p_times: v.times == null ? null : parseInt(v.times, 10),
-        p_source: v.src, p_notes: v.notes, p_draft: !!v.draft });
-      if (!r.error) { toast(v.draft ? 'Draft saved' : 'Care plan is active'); reloadAnimal(a.animal_id); }
+        p_amount: v.amount == null ? null : Number(v.amount), p_unit: v.unit, p_source: v.src, p_notes: v.notes, p_draft: !!v.draft,
+        p_days: v.days == null ? null : parseInt(v.days, 10), p_task_type: v.tasktype || null, p_assignee: v.who,
+        p_times: times.length ? times : null, p_fresh: !!v.fresh });
+      if (!r.error) { toast(v.draft ? 'Draft saved' : times.length ? 'Plan and tasks created' : 'Care plan is active'); reloadAnimal(a.animal_id); }
       return r.error;
     } });
   const act = (fn, id, done, ask) => async () => {
@@ -552,8 +567,9 @@ function carePlansBlock(a, live, drafts, admin) {
   };
   const card = (p, buttons) => h('div', { class: 'card' }, h('div', { class: 'row' },
     h('div', {}, h('span', { class: 'chip' }, p.category), ' ', p.instructions,
-      h('div', { class: 'muted small' }, p.status === 'Draft' ? 'Draft: not active yet'
-        : `Approved by ${state.people[p.approved_by] || 'unknown'} \u00B7 since ${p.effective_from}`)),
+      h('div', { class: 'muted small' }, [p.amount != null ? `${p.amount}${p.amount_unit ? ' ' + p.amount_unit : ''} per task` : null,
+        p.times_per_day ? `${p.times_per_day}\u00D7 a day` : null, p.effective_to ? `until ${p.effective_to}` : null,
+        p.status === 'Draft' ? 'Draft: not active yet' : `approved by ${state.people[p.approved_by] || 'unknown'}, since ${p.effective_from}`].filter(Boolean).join(' \u00B7 '))),
     admin ? buttons : null));
   return h('div', {},
     h('div', { class: 'row' }, h('h2', { class: 'section' }, 'Care plans'), admin ? h('button', { class: 'primary', onclick: add }, '+ Add') : null),
@@ -628,7 +644,7 @@ async function showAnimal(a) {
       a.primary_caregiver ? h('div', { class: 'muted small', style: 'margin-top:6px' }, 'Primary caregiver: ' + a.primary_caregiver) : null,
       info.length ? h('dl', {}, info.map(([k, val]) => [h('dt', {}, k), h('dd', {}, val)])) : null),
     liveAlerts.length ? [h('h2', { class: 'section overdue' }, 'Alerts'), liveAlerts.map((x) => h('div', { class: 'alert' }, `\u26A0 ${x.alert_text}`))] : null,
-    livePlans.length || isAdmin ? carePlansBlock(a, livePlans, drafts, isAdmin) : null,
+    livePlans.length || isAdmin ? carePlansBlock(a, livePlans, drafts, isAdmin, types) : null,
     h('h2', { class: 'section' }, 'Recent observations'),
     obs.data.length ? obs.data.map((x) => h('div', { class: 'card' },
       h('div', { class: 'row' }, h('span', { class: 'muted small' }, `${fmtWhen(x.observed_at)} · ${state.people[x.observed_by] || 'Unknown'} · ${x.category}`),

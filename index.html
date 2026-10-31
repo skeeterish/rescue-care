@@ -332,9 +332,19 @@ function openLogModal(o, existing = null) {
 // ---------- admin and movement actions ----------
 // A simple pop-up form. fields: [{ key, label, type, options, required }]; onSubmit(values) returns an error or null
 function openForm({ title, fields, submit, onSubmit }) {
-  const inputs = fields.map((f) => ({ f, el: f.type === 'select'
-    ? h('select', {}, f.options.map((o) => h('option', { value: o.value }, o.label)))
-    : f.type === 'textarea' ? h('textarea', { rows: 3 }) : h('input', { type: f.type || 'text' }) }));
+  const makeInput = (f) => {
+    if (f.type === 'checks') {   // a row of checkboxes; its value is the checked values joined by commas
+      const box = h('div', { class: 'chips' }, f.options.map((o) => h('label', { class: 'chip' },
+        h('input', { type: 'checkbox', value: o.value, style: 'width:auto;margin:0 4px 0 0' }), o.label)));
+      Object.defineProperty(box, 'value', { get: () => [...box.querySelectorAll('input:checked')].map((i) => i.value).join(',') });
+      return box;
+    }
+    const el = f.type === 'select' ? h('select', {}, f.options.map((o) => h('option', { value: o.value }, o.label)))
+      : f.type === 'textarea' ? h('textarea', { rows: 3 }) : h('input', { type: f.type || 'text' });
+    if (f.value != null) el.value = f.value;
+    return el;
+  };
+  const inputs = fields.map((f) => ({ f, el: makeInput(f) }));
   const err = h('p', { class: 'error' });
   const close = () => overlay.remove();
   const save = h('button', { class: 'primary', onclick: async () => {
@@ -408,6 +418,51 @@ function animalActions(a) {
       admin ? h('button', { onclick: status('medical', ['Evaluation Pending', 'Routine', 'Restricted Activity', 'Needs Follow-up'], 'Medical status') }, 'Medical status') : null));
 }
 
+const DAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']];
+async function getTaskTypes() {
+  if (!state.taskTypes) {
+    const r = await db.from('task_types').select('id, task_name, requires_animal').eq('active', true).order('task_name');
+    state.taskTypes = r.data || [];
+  }
+  return state.taskTypes;
+}
+const clock = (t) => { const [hh, mm] = t.split(':').map(Number); return `${((hh + 11) % 12) + 1}:${String(mm).padStart(2, '0')} ${hh < 12 ? 'AM' : 'PM'}`; };
+
+function recurringCard(a, list, types) {
+  const name = (id) => (types.find((t) => t.id === id) || {}).task_name || 'Task';
+  const add = () => openForm({ title: `Add a recurring task: ${a.animal_name}`, submit: 'Add task',
+    fields: [
+      { key: 'type', label: 'Task', type: 'select', required: true, options: types.filter((t) => t.requires_animal).map((t) => ({ value: t.id, label: t.task_name })) },
+      { key: 'who', label: 'Assigned to', type: 'select', options: peopleOptions() },
+      { key: 'time', label: 'Time of day', type: 'time', required: true },
+      { key: 'repeat', label: 'Repeats', type: 'select', options: [{ value: 'daily', label: 'Every day' }, { value: 'days', label: 'Selected days only' }] },
+      { key: 'days', label: 'Days (only if "Selected days")', type: 'checks', options: DAYS.map(([value, label]) => ({ value, label })) },
+      { key: 'start', label: 'Starts', type: 'date', required: true, value: localDate(new Date()) },
+      { key: 'end', label: 'Ends (optional)', type: 'date' },
+      { key: 'instr', label: 'Instructions (shown to volunteers)', type: 'textarea' }],
+    onSubmit: async (v) => {
+      if (v.repeat === 'days' && !v.days) return { message: 'Pick at least one day.' };
+      const r = await db.from('task_assignments').insert({
+        rescue_id: state.me.rescue_id, animal_id: a.animal_id, episode_id: a.episode_id, task_type_id: v.type, assigned_to: v.who,
+        frequency: v.repeat === 'days' ? 'Weekly' : 'Daily', scheduled_time: v.time,
+        days_of_week: v.repeat === 'days' ? v.days.split(',').map(Number) : null,
+        start_date: v.start, end_date: v.end, instructions: v.instr });
+      if (!r.error) { toast('Task added'); reloadAnimal(a.animal_id); }
+      return r.error;
+    } });
+  const end = async (x) => {
+    if (!confirm('End this recurring task? Upcoming occurrences will be cancelled; past ones are kept.')) return;
+    const today = localDate(new Date());
+    const r = await db.from('task_assignments').update({ active: false, end_date: x.start_date > today ? x.start_date : today }).eq('id', x.id);
+    if (r.error) toast(r.error.message, true); else { toast('Task ended'); reloadAnimal(a.animal_id); }
+  };
+  return h('div', { class: 'card' }, h('div', { class: 'row' }, h('div', { class: 'title' }, 'Recurring tasks'), h('button', { class: 'primary', onclick: add }, '+ Add')),
+    list.length ? list.map((x) => h('div', { class: 'instr row' },
+      h('div', {}, `${name(x.task_type_id)} \u00B7 ${clock(x.scheduled_time)} \u00B7 ${x.days_of_week ? x.days_of_week.map((d) => DAYS[d - 1][1]).join(', ') : 'Every day'}`,
+        h('div', { class: 'muted small' }, [state.people[x.assigned_to] || 'Unassigned', x.instructions].filter(Boolean).join(' \u00B7 '))),
+      h('button', { onclick: () => end(x) }, 'End'))) : h('p', { class: 'muted small' }, 'No recurring tasks yet.'));
+}
+
 // ---------- animals ----------
 async function showAnimals() {
   state.reload = showAnimals;
@@ -429,14 +484,17 @@ async function showAnimal(a) {
   const v = state.$view;
   v.replaceChildren(loading());
   const today = localDate(new Date());
-  const [animal, alerts, plans, obs] = await Promise.all([
+  const isAdmin = state.me.role === 'Admin';
+  const [animal, alerts, plans, obs, asg, types] = await Promise.all([
     db.from('animals').select('*').eq('id', a.animal_id).single(),
     db.from('animal_alerts').select('*').eq('animal_id', a.animal_id).eq('status', 'Active').order('created_at', { ascending: false }),
     a.episode_id ? db.from('care_plans').select('*').eq('episode_id', a.episode_id).eq('status', 'Active') : Promise.resolve({ data: [] }),
     db.from('observations').select('*').eq('animal_id', a.animal_id).order('observed_at', { ascending: false }).limit(10),
+    isAdmin && a.episode_id ? db.from('task_assignments').select('*').eq('episode_id', a.episode_id).eq('active', true).order('scheduled_time') : Promise.resolve({ data: [] }),
+    isAdmin ? getTaskTypes() : Promise.resolve([]),
   ]);
   if (state.tab !== 'animals') return;
-  const bad = [animal, alerts, plans, obs].find((r) => r.error);
+  const bad = [animal, alerts, plans, obs, asg].find((r) => r.error);
   if (bad) return v.replaceChildren(backBtn(), errorBox(bad.error.message));
 
   const an = animal.data;
@@ -476,6 +534,7 @@ async function showAnimal(a) {
         h('span', { class: 'chip ' + x.severity.toLowerCase() }, x.severity)),
       h('div', { style: 'margin-top:6px' }, x.observation))) : h('p', { class: 'muted' }, 'None recorded.'),
     a.episode_id ? animalActions(a) : null,
+    isAdmin && a.episode_id ? recurringCard(a, asg.data, types) : null,
     a.episode_id ? h('div', { class: 'card' }, h('div', { class: 'title' }, 'Add an observation'), cat, sev, text, err, add)
                  : h('p', { class: 'muted small' }, 'This animal has no current episode, so observations cannot be added.')));
 }

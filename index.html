@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f6f4f">
+<title>Rescue Care</title>
+<style>
+  :root {
+    --bg: #f4f5f2; --card: #ffffff; --text: #1d2420; --muted: #66706a; --line: #dde1dc;
+    --accent: #2f6f4f; --accent-text: #ffffff;
+    --red: #c0392b; --red-bg: #fdecea; --amber: #b9770e; --amber-bg: #fef5e1;
+    --blue: #2e6da4; --green: #3d8b5f; --green-bg: #e8f4ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141816; --card: #1e2421; --text: #e8ece9; --muted: #9aa49e; --line: #2f3833;
+      --accent: #5fb386; --accent-text: #0e1511;
+      --red: #ff7b6b; --red-bg: #3a1e1b; --amber: #f0b24a; --amber-bg: #38290f;
+      --blue: #7db4e6; --green: #6fcf97; --green-bg: #1b2e23;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { max-width: 640px; margin: 0 auto; min-height: 100vh; padding: env(safe-area-inset-top) 12px calc(76px + env(safe-area-inset-bottom)); }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 0; }
+  .hdr-actions { display: flex; gap: 4px; }
+  .muted { color: var(--muted); } .small { font-size: 13px; } .center { text-align: center; padding: 24px 0; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer; min-height: 44px; }
+  button.primary { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.ghost { background: transparent; color: var(--muted); padding: 8px 10px; min-height: 36px; font-size: 14px; }
+  button:disabled { opacity: .55; }
+  input, select, textarea { font: inherit; width: 100%; padding: 11px 12px; margin: 6px 0; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--bg); color: var(--text); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 10px 0; }
+  .card.clickable { cursor: pointer; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .title { font-weight: 650; }
+  h2.section { font-size: 14px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 22px 0 4px; }
+  h2.section.overdue { color: var(--red); } h2.section.soon { color: var(--amber); }
+  .task { border-left: 6px solid var(--line); }
+  .task.overdue { border-left-color: var(--red); } .task.soon { border-left-color: var(--amber); }
+  .task.later { border-left-color: var(--blue); } .task.done { border-left-color: var(--green); opacity: .75; }
+  .instr { margin-top: 8px; padding: 8px 10px; background: var(--bg); border-radius: 8px; font-size: 14px; }
+  .alert { margin-top: 8px; padding: 8px 10px; background: var(--red-bg); color: var(--red); border-radius: 8px; font-size: 14px; font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { display: inline-block; padding: 3px 9px; border-radius: 99px; font-size: 13px; background: var(--bg); border: 1px solid var(--line); }
+  .chip.warn { background: var(--red-bg); color: var(--red); border-color: transparent; font-weight: 600; }
+  .chip.notable { background: var(--amber-bg); color: var(--amber); border-color: transparent; }
+  .chip.concerning, .chip.urgent { background: var(--red-bg); color: var(--red); border-color: transparent; }
+  .error { color: var(--red); font-size: 14px; min-height: 1em; }
+  .login { margin-top: 12vh; } .login h1 { margin: 0 0 4px; }
+  nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card); border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom); }
+  nav.tabs button { flex: 1; background: transparent; color: var(--muted); border-radius: 0; min-height: 56px; font-weight: 600; }
+  nav.tabs button.active { color: var(--accent); }
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
+  .sheet { width: 100%; max-width: 640px; background: var(--card); border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); max-height: 90vh; overflow: auto; }
+  .sheet .btns { display: flex; gap: 8px; margin-top: 8px; } .sheet .btns button { flex: 1; }
+  .toast { position: fixed; left: 12px; right: 12px; bottom: calc(72px + env(safe-area-inset-bottom)); max-width: 616px; margin: 0 auto;
+    background: var(--text); color: var(--bg); padding: 12px 14px; border-radius: 10px; z-index: 20; }
+  .toast.err { background: var(--red); color: #fff; }
+  dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 14px; }
+  dt { color: var(--muted); } dd { margin: 0; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<noscript>This app needs JavaScript.</noscript>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+// ---------------------------------------------------------------------
+// Settings. The publishable key is designed to be public; the database's
+// access rules (RLS) are what protect the data. NEVER put the service_role
+// or "secret" key in this file.
+// ---------------------------------------------------------------------
+const SUPABASE_URL = 'https://vrwkosctkbuppdiisjhp.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_-HN6NaIybL85vhWwHP9ksA_2hpywK1p';
+
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const $app = document.getElementById('app');
+const state = { me: null, rescue: null, tz: 'America/Denver', people: {}, tab: 'tasks', reload: null, timer: null, $view: null };
+
+const OUTCOMES = [
+  { value: 'Done',        label: 'Done',                      status: 'Completed' },
+  { value: 'Refused',     label: 'Refused / wouldn\'t',       status: 'Completed' },
+  { value: 'Partly done', label: 'Partly done',               status: 'Completed' },
+  { value: 'Skipped',     label: 'Skipped / couldn\'t do it', status: 'Skipped' },
+];
+
+// ---------- small helpers ----------
+// Builds page elements. Text is always inserted as plain text, never as HTML.
+function h(tag, props = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') el.className = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat(Infinity)) {
+    if (kid == null || kid === false) continue;
+    el.append(typeof kid === 'object' ? kid : String(kid));
+  }
+  return el;
+}
+const localDate = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: state.tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(d));
+const fmtTime = (d) => new Intl.DateTimeFormat('en-US', { timeZone: state.tz, hour: 'numeric', minute: '2-digit' }).format(new Date(d));
+const fmtWhen = (d) => localDate(d) === localDate(new Date())
+  ? fmtTime(d)
+  : new Intl.DateTimeFormat('en-US', { timeZone: state.tz, month: 'short', day: 'numeric' }).format(new Date(d)) + ' ' + fmtTime(d);
+
+function toast(msg, isError = false) {
+  const t = h('div', { class: 'toast' + (isError ? ' err' : '') }, msg);
+  document.body.append(t);
+  setTimeout(() => t.remove(), isError ? 6000 : 2500);
+}
+const errorBox = (msg) => h('div', { class: 'card' }, h('p', { class: 'error' }, 'Something went wrong: ' + msg));
+const loading = () => h('p', { class: 'muted center' }, 'Loading...');
+
+// ---------- start-up and sign-in ----------
+async function start() {
+  const { data } = await db.auth.getSession();
+  if (data.session) boot(data.session.user); else showLogin();
+}
+
+function showLogin() {
+  stopTimer();
+  const email = h('input', { type: 'email', placeholder: 'Email', autocomplete: 'username', required: true });
+  const pw = h('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password', required: true });
+  const msg = h('p', { class: 'error' });
+  const btn = h('button', { type: 'submit', class: 'primary' }, 'Sign in');
+  const form = h('form', { class: 'card login', onsubmit: async (e) => {
+    e.preventDefault(); msg.textContent = ''; btn.disabled = true;
+    const { data, error } = await db.auth.signInWithPassword({ email: email.value.trim(), password: pw.value });
+    btn.disabled = false;
+    if (error) { msg.textContent = error.message; return; }
+    boot(data.user);
+  } }, h('h1', {}, 'Rescue Care'), h('p', { class: 'muted' }, 'Sign in with the account an administrator created for you.'), email, pw, btn, msg);
+  $app.replaceChildren(form);
+}
+
+async function signOut() {
+  stopTimer();
+  await db.auth.signOut();
+  state.me = null;
+  showLogin();
+}
+
+function showFatal(message) {
+  $app.replaceChildren(h('div', { class: 'card login' }, h('p', {}, message), h('button', { class: 'primary', onclick: signOut }, 'Sign out')));
+}
+
+async function boot(user) {
+  $app.replaceChildren(loading());
+  const mine = await db.from('people').select('id, name, role, rescue_id').eq('auth_user_id', user.id).eq('active', true);
+  if (mine.error) return showFatal(mine.error.message);
+  if (!mine.data.length) return showFatal('Your login is not linked to a person in a rescue yet. Please ask an administrator.');
+  state.me = mine.data[0];
+  const [rescue, people] = await Promise.all([
+    db.from('rescues').select('id, name, timezone').eq('id', state.me.rescue_id).single(),
+    db.from('people').select('id, name').eq('rescue_id', state.me.rescue_id),
+  ]);
+  if (rescue.error) return showFatal(rescue.error.message);
+  state.rescue = rescue.data;
+  state.tz = rescue.data.timezone;
+  state.people = Object.fromEntries((people.data || []).map((p) => [p.id, p.name]));
+  renderShell();
+  stopTimer();
+  state.timer = setInterval(() => {
+    if (state.tab === 'tasks' && !document.querySelector('.overlay')) showTasks();
+  }, 60000);
+}
+function stopTimer() { if (state.timer) clearInterval(state.timer); state.timer = null; }
+
+// ---------- page frame ----------
+function renderShell() {
+  const tabBtn = (name, label) => h('button', { 'data-tab': name, onclick: () => setTab(name) }, label);
+  state.$view = h('main');
+  $app.replaceChildren(
+    h('header', {},
+      h('div', {}, h('strong', {}, state.rescue.name), h('div', { class: 'muted small' }, `${state.me.name} (${state.me.role})`)),
+      h('div', { class: 'hdr-actions' },
+        h('button', { class: 'ghost', onclick: () => state.reload && state.reload() }, 'Refresh'),
+        h('button', { class: 'ghost', onclick: signOut }, 'Sign out'))),
+    state.$view,
+    h('nav', { class: 'tabs' }, tabBtn('tasks', 'Tasks'), tabBtn('animals', 'Animals')));
+  setTab(state.tab);
+}
+function setTab(name) {
+  state.tab = name;
+  document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+  state.$view.replaceChildren(loading());
+  if (name === 'tasks') showTasks(); else showAnimals();
+}
+
+// ---------- tasks ----------
+async function showTasks() {
+  state.reload = showTasks;
+  const from = new Date(Date.now() - 36 * 3600e3).toISOString();
+  const to = new Date(Date.now() + 36 * 3600e3).toISOString();
+  const { data, error } = await db.from('task_list').select('*').gte('scheduled_at', from).lte('scheduled_at', to).order('scheduled_at');
+  if (state.tab !== 'tasks') return;
+  const v = state.$view;
+  if (error) return v.replaceChildren(errorBox(error.message));
+
+  const now = new Date();
+  const today = localDate(now);
+  const rows = data.filter((o) => localDate(o.scheduled_at) === today || (o.status === 'Scheduled' && new Date(o.scheduled_at) < now));
+  const groups = { overdue: [], soon: [], later: [], done: [] };
+  for (const o of rows) {
+    if (o.status !== 'Scheduled') { groups.done.push(o); continue; }
+    const mins = (new Date(o.scheduled_at) - now) / 60000;
+    (mins < 0 ? groups.overdue : mins <= 60 ? groups.soon : groups.later).push(o);
+  }
+  const section = (key, label) => groups[key].length
+    ? [h('h2', { class: 'section ' + key }, `${label} (${groups[key].length})`), ...groups[key].map((o) => taskCard(o, key))]
+    : [];
+
+  if (!rows.length) {
+    v.replaceChildren(h('div', { class: 'card' }, h('p', {}, 'No tasks are scheduled for today.'),
+      h('p', { class: 'muted small' }, 'If you expected some, ask an administrator to check that today\'s tasks have been generated.')));
+    return;
+  }
+  v.replaceChildren(...section('overdue', 'Overdue'), ...section('soon', 'Due within the hour'),
+    ...section('later', 'Later today'), ...section('done', 'Done'));
+}
+
+function taskCard(o, kind) {
+  const alerts = o.active_alerts ? o.active_alerts.split(' | ') : [];
+  const who = o.assigned_to_name ? `Assigned: ${o.assigned_to_name}${o.assigned_to === state.me.id ? ' (you)' : ''}` : 'Unassigned';
+  return h('div', { class: 'card task ' + kind },
+    h('div', { class: 'row' },
+      h('div', {},
+        h('div', { class: 'title' }, o.animal_name ? `${o.task_name}: ${o.animal_name}` : o.task_name),
+        h('div', { class: 'muted small' }, [fmtWhen(o.scheduled_at), o.location_name, who].filter(Boolean).join(' · '))),
+      kind === 'done' ? h('span', { class: 'chip' }, o.status) : h('button', { class: 'primary', onclick: () => openLogModal(o) }, 'Log')),
+    o.instruction_snapshot ? h('div', { class: 'instr' }, o.instruction_snapshot) : null,
+    alerts.map((a) => h('div', { class: 'alert' }, '\u26A0 ' + a)));
+}
+
+function openLogModal(o) {
+  const outcome = h('select', {}, OUTCOMES.map((x) => h('option', { value: x.value }, x.label)));
+  const amount = h('input', { type: 'number', step: 'any', inputmode: 'decimal', placeholder: 'Amount (optional)' });
+  const unit = h('input', { type: 'text', placeholder: 'Unit, e.g. cups (optional)' });
+  const notes = h('textarea', { rows: 3, placeholder: 'Notes (optional; required if skipped)' });
+  const err = h('p', { class: 'error' });
+  const close = () => overlay.remove();
+  const save = h('button', { class: 'primary', onclick: async () => {
+    err.textContent = '';
+    const choice = OUTCOMES.find((x) => x.value === outcome.value);
+    if (choice.value === 'Skipped' && !notes.value.trim()) { err.textContent = 'Please add a note explaining why it was skipped.'; return; }
+    save.disabled = true;
+    const now = new Date().toISOString();
+    const log = await db.from('care_log').insert({
+      occurrence_id: o.occurrence_id, rescue_id: state.me.rescue_id, completed_by: state.me.id, task_time: now,
+      outcome: choice.value, detail_value: amount.value === '' ? null : Number(amount.value),
+      detail_unit: unit.value.trim() || null, notes: notes.value.trim() || null,
+    });
+    if (log.error) { err.textContent = log.error.message; save.disabled = false; return; }
+    const upd = await db.from('task_occurrences').update({
+      status: choice.status, completed_by: state.me.id, completed_at: now, actual_task_time: now,
+    }).eq('id', o.occurrence_id);
+    if (upd.error) { err.textContent = 'Saved your note, but could not update the task: ' + upd.error.message; save.disabled = false; return; }
+    close(); toast('Logged'); showTasks();
+  } }, 'Save');
+  const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+    h('div', { class: 'sheet' },
+      h('div', { class: 'title' }, o.animal_name ? `${o.task_name}: ${o.animal_name}` : o.task_name),
+      o.instruction_snapshot ? h('div', { class: 'instr' }, o.instruction_snapshot) : null,
+      outcome, amount, unit, notes, err,
+      h('div', { class: 'btns' }, h('button', { onclick: close }, 'Cancel'), save)));
+  document.body.append(overlay);
+}
+
+// ---------- animals ----------
+async function showAnimals() {
+  state.reload = showAnimals;
+  const { data, error } = await db.from('animal_current_state').select('*').order('animal_name');
+  if (state.tab !== 'animals') return;
+  const v = state.$view;
+  if (error) return v.replaceChildren(errorBox(error.message));
+  if (!data.length) return v.replaceChildren(h('div', { class: 'card' }, 'No animals yet.'));
+  v.replaceChildren(...data.map((a) => h('div', { class: 'card clickable', role: 'button', onclick: () => showAnimal(a) },
+    h('div', { class: 'row' }, h('span', { class: 'title' }, a.animal_name),
+      a.active_alert_count > 0 ? h('span', { class: 'chip warn' }, `\u26A0 ${a.active_alert_count} alert${a.active_alert_count > 1 ? 's' : ''}`) : null),
+    h('div', { class: 'chips' }, [a.rescue_status, a.medical_status, a.location_name].filter(Boolean).map((t) => h('span', { class: 'chip' }, t))),
+    a.primary_caregiver ? h('div', { class: 'muted small', style: 'margin-top:6px' }, 'Primary caregiver: ' + a.primary_caregiver) : null)));
+}
+
+async function showAnimal(a) {
+  state.reload = () => showAnimal(a);
+  const v = state.$view;
+  v.replaceChildren(loading());
+  const today = localDate(new Date());
+  const [animal, alerts, plans, obs] = await Promise.all([
+    db.from('animals').select('*').eq('id', a.animal_id).single(),
+    db.from('animal_alerts').select('*').eq('animal_id', a.animal_id).eq('status', 'Active').order('created_at', { ascending: false }),
+    a.episode_id ? db.from('care_plans').select('*').eq('episode_id', a.episode_id).eq('status', 'Active') : Promise.resolve({ data: [] }),
+    db.from('observations').select('*').eq('animal_id', a.animal_id).order('observed_at', { ascending: false }).limit(10),
+  ]);
+  if (state.tab !== 'animals') return;
+  const bad = [animal, alerts, plans, obs].find((r) => r.error);
+  if (bad) return v.replaceChildren(backBtn(), errorBox(bad.error.message));
+
+  const an = animal.data;
+  const liveAlerts = alerts.data.filter((x) => x.start_date <= today && (!x.expiration_date || x.expiration_date >= today));
+  const livePlans = plans.data.filter((p) => p.effective_from <= today && (!p.effective_to || p.effective_to > today));
+  const info = [['Species', an.species], ['Breed', an.breed], ['Sex', an.sex], ['Born', an.dob], ['Notes', an.internal_notes]].filter(([, val]) => val);
+
+  const cat = h('select', {}, ['Behavior', 'Appetite', 'Mobility', 'Appearance', 'Pain', 'Other'].map((c) => h('option', { value: c }, c)));
+  const sev = h('select', {}, ['Normal', 'Notable', 'Concerning', 'Urgent'].map((c) => h('option', { value: c }, c)));
+  const text = h('textarea', { rows: 3, placeholder: 'What did you notice?' });
+  const err = h('p', { class: 'error' });
+  const add = h('button', { class: 'primary', onclick: async () => {
+    err.textContent = '';
+    if (!text.value.trim()) { err.textContent = 'Please describe what you noticed.'; return; }
+    add.disabled = true;
+    const r = await db.from('observations').insert({
+      animal_id: a.animal_id, episode_id: a.episode_id, rescue_id: state.me.rescue_id, observed_at: new Date().toISOString(),
+      observed_by: state.me.id, category: cat.value, severity: sev.value, observation: text.value.trim(),
+    });
+    if (r.error) { err.textContent = r.error.message; add.disabled = false; return; }
+    toast('Observation saved'); showAnimal(a);
+  } }, 'Save observation');
+
+  v.replaceChildren(h('div', {},
+    backBtn(),
+    h('div', { class: 'card' },
+      h('div', { class: 'title', style: 'font-size:20px' }, an.name),
+      h('div', { class: 'chips' }, [a.rescue_status, a.medical_status, a.location_name].filter(Boolean).map((t) => h('span', { class: 'chip' }, t))),
+      a.primary_caregiver ? h('div', { class: 'muted small', style: 'margin-top:6px' }, 'Primary caregiver: ' + a.primary_caregiver) : null,
+      info.length ? h('dl', {}, info.map(([k, val]) => [h('dt', {}, k), h('dd', {}, val)])) : null),
+    liveAlerts.length ? [h('h2', { class: 'section overdue' }, 'Alerts'), liveAlerts.map((x) => h('div', { class: 'alert' }, `\u26A0 ${x.alert_text}`))] : null,
+    livePlans.length ? [h('h2', { class: 'section' }, 'Current care plans'),
+      livePlans.map((p) => h('div', { class: 'card' }, h('span', { class: 'chip' }, p.category), ' ', p.instructions))] : null,
+    h('h2', { class: 'section' }, 'Recent observations'),
+    obs.data.length ? obs.data.map((x) => h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('span', { class: 'muted small' }, `${fmtWhen(x.observed_at)} · ${state.people[x.observed_by] || 'Unknown'} · ${x.category}`),
+        h('span', { class: 'chip ' + x.severity.toLowerCase() }, x.severity)),
+      h('div', { style: 'margin-top:6px' }, x.observation))) : h('p', { class: 'muted' }, 'None recorded.'),
+    a.episode_id ? h('div', { class: 'card' }, h('div', { class: 'title' }, 'Add an observation'), cat, sev, text, err, add)
+                 : h('p', { class: 'muted small' }, 'This animal has no current episode, so observations cannot be added.')));
+}
+const backBtn = () => h('button', { class: 'ghost', onclick: () => showAnimals() }, '\u2190 All animals');
+
+start();
+</script>
+</body>
+</html>

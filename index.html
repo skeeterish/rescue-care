@@ -335,7 +335,7 @@ function openForm({ title, fields, submit, onSubmit }) {
   const makeInput = (f) => {
     if (f.type === 'checks') {   // a row of checkboxes; its value is the checked values joined by commas
       const box = h('div', { class: 'chips' }, f.options.map((o) => h('label', { class: 'chip' },
-        h('input', { type: 'checkbox', value: o.value, style: 'width:auto;margin:0 4px 0 0' }), o.label)));
+        h('input', { type: 'checkbox', value: o.value, checked: !!f.checked, style: 'width:auto;margin:0 4px 0 0' }), o.label)));
       Object.defineProperty(box, 'value', { get: () => [...box.querySelectorAll('input:checked')].map((i) => i.value).join(',') });
       return box;
     }
@@ -418,10 +418,12 @@ function animalActions(a) {
     const locs = await locationOptions();
     openForm({ title: `Return ${a.animal_name} to the rescue`, submit: 'Record return',
       fields: [{ key: 'loc', label: 'Where is the animal going?', type: 'select', options: locs, required: true },
-        { key: 'reason', label: 'Reason for return', value: 'Returned by adopter', required: true }, { key: 'notes', label: 'Notes', type: 'textarea' }],
+        { key: 'reason', label: 'Reason for return', value: 'Returned by adopter', required: true },
+        { key: 'copy', label: 'Recurring tasks', type: 'checks', checked: true, options: [{ value: 'copy', label: 'Bring back the previous stay\'s tasks' }] },
+        { key: 'notes', label: 'Notes', type: 'textarea' }],
       onSubmit: async (v) => {
         if (!confirm('This ends the current stay and starts a new one. Continue?')) return { message: 'Cancelled.' };
-        const r = await db.rpc('return_animal', { p_animal: a.animal_id, p_location: v.loc, p_reason: v.reason, p_notes: v.notes });
+        const r = await db.rpc('return_animal', { p_animal: a.animal_id, p_location: v.loc, p_reason: v.reason, p_notes: v.notes, p_copy_tasks: !!v.copy });
         if (!r.error) { toast('Return recorded'); reloadAnimal(a.animal_id); }
         return r.error;
       } });
@@ -451,6 +453,7 @@ function recurringCard(a, list, types) {
         onchange: (val, els) => { const t = types.find((x) => x.id === val); els.fresh.querySelector('input').checked = !!t && t.category === 'Medical'; } },
       { key: 'who', label: 'Assigned to', type: 'select', options: peopleOptions() },
       { key: 'time', label: 'Time of day', type: 'time', required: true },
+      { key: 'time2', label: 'Also at (optional)', type: 'time' }, { key: 'time3', label: 'And at (optional)', type: 'time' }, { key: 'time4', label: 'And at (optional)', type: 'time' },
       { key: 'repeat', label: 'Repeats', type: 'select', options: [{ value: 'daily', label: 'Every day' }, { value: 'days', label: 'Selected days only' }] },
       { key: 'days', label: 'Days (only if "Selected days")', type: 'checks', options: DAYS.map(([value, label]) => ({ value, label })) },
       { key: 'start', label: 'Starts', type: 'date', required: true, value: localDate(new Date()) },
@@ -459,13 +462,14 @@ function recurringCard(a, list, types) {
       { key: 'instr', label: 'Instructions (shown to volunteers)', type: 'textarea' }],
     onSubmit: async (v) => {
       if (v.repeat === 'days' && !v.days) return { message: 'Pick at least one day.' };
-      const r = await db.from('task_assignments').insert({
+      const times = [...new Set([v.time, v.time2, v.time3, v.time4].filter(Boolean))];
+      const r = await db.from('task_assignments').insert(times.map((tm) => ({
         rescue_id: state.me.rescue_id, animal_id: a.animal_id, episode_id: a.episode_id, task_type_id: v.type, assigned_to: v.who,
-        frequency: v.repeat === 'days' ? 'Weekly' : 'Daily', scheduled_time: v.time,
+        frequency: v.repeat === 'days' ? 'Weekly' : 'Daily', scheduled_time: tm,
         days_of_week: v.repeat === 'days' ? v.days.split(',').map(Number) : null,
         start_date: v.start, end_date: v.end, instructions: v.instr,
-        start_from: !v.fresh && v.start === localDate(new Date()) ? new Date().toISOString() : null });
-      if (!r.error) { toast('Task added'); reloadAnimal(a.animal_id); }
+        start_from: !v.fresh && v.start === localDate(new Date()) ? new Date().toISOString() : null })));
+      if (!r.error) { toast(times.length > 1 ? 'Tasks added' : 'Task added'); reloadAnimal(a.animal_id); }
       return r.error;
     } });
   const end = async (x) => {
@@ -554,7 +558,7 @@ async function showAnimal(a) {
     a.episode_id ? animalActions(a) : null,
     isAdmin && a.episode_id ? recurringCard(a, asg.data, types) : null,
     a.episode_id ? h('div', { class: 'card' }, h('div', { class: 'title' }, 'Add an observation'), cat, sev, text, err, add)
-                 : h('p', { class: 'muted small' }, 'This animal has no current episode, so observations cannot be added.')));
+                 : h('p', { class: 'muted small' }, 'This animal has no current stay, so observations cannot be added.')));
 }
 const backBtn = () => h('button', { class: 'ghost', onclick: () => showAnimals() }, '\u2190 All animals');
 

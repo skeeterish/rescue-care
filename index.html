@@ -87,6 +87,8 @@ const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $app = document.getElementById('app');
 const state = { me: null, rescue: null, tz: 'America/Denver', people: {}, tab: 'tasks', dayOffset: 0, reload: null, timer: null, $view: null };
 
+const EDIT_WINDOW_MIN = 15;   // volunteers can edit their own entries for this long (the database enforces it)
+
 const OUTCOMES = [
   { value: 'Done',        label: 'Done',                      status: 'Completed' },
   { value: 'Refused',     label: 'Refused / wouldn\'t',       status: 'Completed' },
@@ -244,8 +246,16 @@ async function showTasks() {
     const mins = (new Date(o.scheduled_at) - now) / 60000;
     (mins < 0 ? groups.overdue : mins <= 60 ? groups.soon : groups.later).push(o);
   }
+  // Log entries for finished tasks, so each can show what was recorded (and offer Edit)
+  const entries = {};
+  if (groups.done.length) {
+    const r = await db.from('care_log').select('*').in('occurrence_id', groups.done.map((o) => o.occurrence_id))
+      .eq('status', 'Active').order('logged_at');
+    if (state.tab !== 'tasks' || state.dayOffset !== 0) return;
+    if (!r.error) for (const e of r.data) entries[e.occurrence_id] = e;   // latest entry wins
+  }
   const section = (key, label) => groups[key].length
-    ? [h('h2', { class: 'section ' + key }, `${label} (${groups[key].length})`), ...groups[key].map((o) => taskCard(o, key))]
+    ? [h('h2', { class: 'section ' + key }, `${label} (${groups[key].length})`), ...groups[key].map((o) => taskCard(o, key, entries[o.occurrence_id]))]
     : [];
 
   if (!rows.length) {
@@ -257,24 +267,38 @@ async function showTasks() {
     ...section('later', 'Later today'), ...section('done', 'Done'));
 }
 
-function taskCard(o, kind) {
+function taskCard(o, kind, entry) {
   const alerts = o.active_alerts ? o.active_alerts.split(' | ') : [];
   const who = o.assigned_to_name ? `Assigned: ${o.assigned_to_name}${o.assigned_to === state.me.id ? ' (you)' : ''}` : 'Unassigned';
+  const canEdit = kind === 'done' && entry && (state.me.role === 'Admin' ||
+    (entry.completed_by === state.me.id && Date.now() - new Date(entry.logged_at) < EDIT_WINDOW_MIN * 60000));
+  const summary = entry ? [entry.outcome,
+    entry.detail_value != null ? `${entry.detail_value}${entry.detail_unit ? ' ' + entry.detail_unit : ''}` : null,
+    entry.notes].filter(Boolean).join(' \u00B7 ') : null;
+  const right = kind === 'done'
+    ? (canEdit ? h('button', { class: 'primary', onclick: () => openLogModal(o, entry) }, 'Edit')
+               : h('span', { class: 'chip' }, entry ? entry.outcome : o.status))
+    : kind === 'preview' ? null
+    : h('button', { class: 'primary', onclick: () => openLogModal(o) }, 'Log');
   return h('div', { class: 'card task ' + kind },
     h('div', { class: 'row' },
       h('div', {},
         h('div', { class: 'title' }, o.animal_name ? `${o.task_name}: ${o.animal_name}` : o.task_name),
-        h('div', { class: 'muted small' }, [fmtWhen(o.scheduled_at), o.location_name, who].filter(Boolean).join(' · '))),
-      kind === 'done' ? h('span', { class: 'chip' }, o.status) : kind === 'preview' ? null : h('button', { class: 'primary', onclick: () => openLogModal(o) }, 'Log')),
+        h('div', { class: 'muted small' }, [fmtWhen(o.scheduled_at), o.location_name, who].filter(Boolean).join(' \u00B7 '))),
+      right),
     o.instruction_snapshot ? h('div', { class: 'instr' }, o.instruction_snapshot) : null,
+    summary ? h('div', { class: 'instr' }, summary,
+      h('div', { class: 'muted small' }, `Logged by ${state.people[entry.completed_by] || 'unknown'} at ${fmtTime(entry.logged_at)}`)) : null,
     alerts.map((a) => h('div', { class: 'alert' }, '\u26A0 ' + a)));
 }
 
-function openLogModal(o) {
-  const outcome = h('select', {}, OUTCOMES.map((x) => h('option', { value: x.value }, x.label)));
-  const amount = h('input', { type: 'number', step: 'any', inputmode: 'decimal', placeholder: 'Amount (optional)' });
-  const unit = h('input', { type: 'text', placeholder: 'Unit, e.g. cups (optional)' });
-  const notes = h('textarea', { rows: 3, placeholder: 'Notes (optional; required if skipped)' });
+// Log a task (existing = null) or edit a recent entry (existing = the care_log row)
+function openLogModal(o, existing = null) {
+  const outcome = h('select', {}, OUTCOMES.map((x) => h('option', { value: x.value, selected: !!existing && existing.outcome === x.value }, x.label)));
+  const amount = h('input', { type: 'number', step: 'any', inputmode: 'decimal', placeholder: 'Amount (optional)',
+    value: existing && existing.detail_value != null ? existing.detail_value : null });
+  const unit = h('input', { type: 'text', placeholder: 'Unit, e.g. cups (optional)', value: existing ? existing.detail_unit : null });
+  const notes = h('textarea', { rows: 3, placeholder: 'Notes (optional; required if skipped)' }, existing ? existing.notes : null);
   const err = h('p', { class: 'error' });
   const close = () => overlay.remove();
   const save = h('button', { class: 'primary', onclick: async () => {
@@ -282,23 +306,24 @@ function openLogModal(o) {
     const choice = OUTCOMES.find((x) => x.value === outcome.value);
     if (choice.value === 'Skipped' && !notes.value.trim()) { err.textContent = 'Please add a note explaining why it was skipped.'; return; }
     save.disabled = true;
-    const now = new Date().toISOString();
-    const log = await db.from('care_log').insert({
-      occurrence_id: o.occurrence_id, rescue_id: state.me.rescue_id, completed_by: state.me.id, task_time: now,
-      outcome: choice.value, detail_value: amount.value === '' ? null : Number(amount.value),
-      detail_unit: unit.value.trim() || null, notes: notes.value.trim() || null,
-    });
-    if (log.error) { err.textContent = log.error.message; save.disabled = false; return; }
-    const upd = await db.from('task_occurrences').update({
-      status: choice.status, completed_by: state.me.id, completed_at: now, actual_task_time: now,
-    }).eq('id', o.occurrence_id);
-    if (upd.error) { err.textContent = 'Saved your note, but could not update the task: ' + upd.error.message; save.disabled = false; return; }
-    close(); toast('Logged'); showTasks();
-  } }, 'Save');
+    const args = {
+      p_outcome: choice.value,
+      p_detail_value: amount.value === '' ? null : Number(amount.value),
+      p_detail_unit: unit.value.trim() || null,
+      p_notes: notes.value.trim() || null,
+    };
+    // One protected database call does everything and checks the rules
+    const r = existing
+      ? await db.rpc('edit_care_log', { p_log: existing.id, ...args })
+      : await db.rpc('log_task', { p_occurrence: o.occurrence_id, ...args });
+    if (r.error) { err.textContent = r.error.message; save.disabled = false; return; }
+    close(); toast(existing ? 'Updated' : 'Logged'); showTasks();
+  } }, existing ? 'Save changes' : 'Save');
   const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
     h('div', { class: 'sheet' },
-      h('div', { class: 'title' }, o.animal_name ? `${o.task_name}: ${o.animal_name}` : o.task_name),
+      h('div', { class: 'title' }, (existing ? 'Edit: ' : '') + (o.animal_name ? `${o.task_name}: ${o.animal_name}` : o.task_name)),
       o.instruction_snapshot ? h('div', { class: 'instr' }, o.instruction_snapshot) : null,
+      existing ? h('p', { class: 'muted small' }, 'Changes are recorded in the audit log.') : null,
       outcome, amount, unit, notes, err,
       h('div', { class: 'btns' }, h('button', { onclick: close }, 'Cancel'), save)));
   document.body.append(overlay);

@@ -230,9 +230,10 @@ async function showTasks() {
   if (state.dayOffset > 0) {
     const target = dayShift(today, state.dayOffset);
     const rows = live.filter((o) => localDate(o.scheduled_at) === target);
-    v.replaceChildren(tabs,
+    v.replaceChildren(h('div', {},
+      tabs,
       h('p', { class: 'muted small' }, 'Preview only. These can change until they come due.'),
-      rows.length ? rows.map((o) => taskCard(o, 'preview')) : h('div', { class: 'card' }, 'Nothing scheduled for this day yet.'));
+      rows.length ? rows.map((o) => taskCard(o, 'preview')) : h('div', { class: 'card' }, 'Nothing scheduled for this day yet.')));
     return;
   }
 

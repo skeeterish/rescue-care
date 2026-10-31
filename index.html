@@ -401,7 +401,7 @@ function addAnimalBtn() {
   } }, '+ Add animal');
 }
 
-function animalActions(a) {
+function animalActions(a, an) {
   const admin = state.me.role === 'Admin';
   const move = async () => {
     const locs = await locationOptions();
@@ -414,6 +414,22 @@ function animalActions(a) {
     fields: [{ key: 'status', label: 'New status', type: 'select', options: opts(list), required: true }, { key: 'reason', label: 'Reason (optional)' }],
     onSubmit: async (v) => { const r = await db.rpc('change_status', { p_animal: a.animal_id, p_kind: kind, p_status: v.status, p_reason: v.reason });
       if (!r.error) { toast('Status updated'); reloadAnimal(a.animal_id); } return r.error; } });
+  const edit = () => openForm({ title: `Edit info: ${an.name}`, submit: 'Save changes',
+    fields: [
+      { key: 'name', label: 'Name', required: true, value: an.name }, { key: 'species', label: 'Species', required: true, value: an.species },
+      { key: 'breed', label: 'Breed', value: an.breed },
+      { key: 'sex', label: 'Sex', type: 'select', value: an.sex || '', options: [{ value: '', label: '(unknown)' }, ...opts(['Male', 'Female', 'Unknown'])] },
+      { key: 'dob', label: 'Date of birth', type: 'date', value: an.dob },
+      { key: 'notes', label: 'Internal notes (volunteers see these)', type: 'textarea', value: an.internal_notes },
+      { key: 'pub', label: 'Public website', type: 'checks', checked: an.public_profile, options: [{ value: 'yes', label: 'Show on the public website' }] },
+      { key: 'pubname', label: 'Public name', value: an.public_name },
+      { key: 'pubdesc', label: 'Public description', type: 'textarea', value: an.public_description }],
+    onSubmit: async (v) => {
+      const r = await db.from('animals').update({ name: v.name, species: v.species, breed: v.breed, sex: v.sex, dob: v.dob,
+        internal_notes: v.notes, public_profile: !!v.pub, public_name: v.pubname, public_description: v.pubdesc }).eq('id', a.animal_id);
+      if (!r.error) { toast('Saved'); reloadAnimal(a.animal_id); }
+      return r.error;
+    } });
   const giveBack = async () => {
     const locs = await locationOptions();
     openForm({ title: `Return ${a.animal_name} to the rescue`, submit: 'Record return',
@@ -432,7 +448,8 @@ function animalActions(a) {
     h('div', { class: 'chips' }, h('button', { onclick: move }, 'Move'),
       admin && a.rescue_status === 'Adopted' ? h('button', { class: 'primary', onclick: giveBack }, 'Return to rescue') : null,
       admin ? h('button', { onclick: status('rescue', ['Intake', 'Quarantine', 'Available', 'Adoption Pending', 'Adopted', 'Returned'], 'Rescue status') }, 'Change status') : null,
-      admin ? h('button', { onclick: status('medical', ['Evaluation Pending', 'Routine', 'Restricted Activity', 'Needs Follow-up'], 'Medical status') }, 'Medical status') : null));
+      admin ? h('button', { onclick: status('medical', ['Evaluation Pending', 'Routine', 'Restricted Activity', 'Needs Follow-up'], 'Medical status') }, 'Medical status') : null,
+      admin ? h('button', { onclick: edit }, 'Edit info') : null));
 }
 
 const DAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']];
@@ -578,7 +595,7 @@ async function showAnimal(a) {
       h('div', { class: 'row' }, h('span', { class: 'muted small' }, `${fmtWhen(x.observed_at)} · ${state.people[x.observed_by] || 'Unknown'} · ${x.category}`),
         h('span', { class: 'chip ' + x.severity.toLowerCase() }, x.severity)),
       h('div', { style: 'margin-top:6px' }, x.observation))) : h('p', { class: 'muted' }, 'None recorded.'),
-    a.episode_id ? animalActions(a) : null,
+    a.episode_id ? animalActions(a, an) : null,
     isAdmin && a.episode_id ? recurringCard(a, asg.data, types) : null,
     a.episode_id ? h('div', { class: 'card' }, h('div', { class: 'title' }, 'Add an observation'), cat, sev, text, err, add)
                  : h('p', { class: 'muted small' }, 'This animal has no current stay, so observations cannot be added.')));

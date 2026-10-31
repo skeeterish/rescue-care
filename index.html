@@ -462,7 +462,7 @@ async function getTaskTypes() {
 }
 const clock = (t) => { const [hh, mm] = t.split(':').map(Number); return `${((hh + 11) % 12) + 1}:${String(mm).padStart(2, '0')} ${hh < 12 ? 'AM' : 'PM'}`; };
 
-function recurringCard(a, list, types) {
+function recurringCard(a, list, types, plans = []) {
   const name = (id) => (types.find((t) => t.id === id) || {}).task_name || 'Task';
   const add = () => openForm({ title: `Add a recurring task: ${a ? a.animal_name : 'facility'}`, submit: 'Add task',
     fields: [
@@ -476,6 +476,8 @@ function recurringCard(a, list, types) {
       { key: 'start', label: 'Starts', type: 'date', required: true, value: localDate(new Date()) },
       { key: 'fresh', label: 'If starting today', type: 'checks', options: [{ value: 'day', label: 'Start from beginning of day' }] },
       { key: 'end', label: 'Ends (optional)', type: 'date' },
+      ...(a ? [{ key: 'plan', label: 'Linked care plan (its wording replaces the instructions)', type: 'select',
+        options: [{ value: '', label: '(none)' }, ...plans.map((p) => ({ value: p.id, label: `${p.category}: ${p.instructions.slice(0, 40)}` }))] }] : []),
       { key: 'instr', label: 'Instructions (shown to volunteers)', type: 'textarea' }],
     onSubmit: async (v) => {
       if (v.repeat === 'days' && !v.days) return { message: 'Pick at least one day.' };
@@ -484,7 +486,7 @@ function recurringCard(a, list, types) {
         rescue_id: state.me.rescue_id, animal_id: a ? a.animal_id : null, episode_id: a ? a.episode_id : null, task_type_id: v.type, assigned_to: v.who,
         frequency: v.repeat === 'days' ? 'Weekly' : 'Daily', scheduled_time: tm,
         days_of_week: v.repeat === 'days' ? v.days.split(',').map(Number) : null,
-        start_date: v.start, end_date: v.end, instructions: v.instr,
+        start_date: v.start, end_date: v.end, instructions: v.instr, care_plan_id: v.plan || null,
         start_from: !v.fresh && v.start === localDate(new Date()) ? new Date().toISOString() : null })));
       if (!r.error) { toast(times.length > 1 ? 'Tasks added' : 'Task added'); a ? reloadAnimal(a.animal_id) : showFacility(); }
       return r.error;
@@ -525,6 +527,43 @@ async function showFacility() {
       h('button', { onclick: newKind }, '+ New kind')))));
 }
 
+// ---------- care plans ----------
+function carePlansBlock(a, live, drafts, admin) {
+  const add = () => openForm({ title: `New care plan: ${a.animal_name}`, submit: 'Save plan',
+    fields: [
+      { key: 'cat', label: 'Category', type: 'select', required: true, options: opts(['Feeding', 'Exercise', 'Medication', 'Handling', 'Kennel', 'Other']) },
+      { key: 'instr', label: 'Instructions (a new Feeding plan replaces the current one and takes over its tasks)', type: 'textarea', required: true },
+      { key: 'amount', label: 'Amount (optional, e.g. 1.5)', type: 'number' }, { key: 'unit', label: 'Unit (optional, e.g. cups)' },
+      { key: 'times', label: 'Times per day (optional)', type: 'number' },
+      { key: 'src', label: 'Source', type: 'select', options: opts(['Rescue Decision', 'Vet Recommendation']) },
+      { key: 'draft', label: 'Approval', type: 'checks', options: [{ value: 'draft', label: 'Save as draft (approve later)' }] },
+      { key: 'notes', label: 'Notes', type: 'textarea' }],
+    onSubmit: async (v) => {
+      const r = await db.rpc('save_care_plan', { p_animal: a.animal_id, p_category: v.cat, p_instructions: v.instr,
+        p_amount: v.amount == null ? null : Number(v.amount), p_unit: v.unit, p_times: v.times == null ? null : parseInt(v.times, 10),
+        p_source: v.src, p_notes: v.notes, p_draft: !!v.draft });
+      if (!r.error) { toast(v.draft ? 'Draft saved' : 'Care plan is active'); reloadAnimal(a.animal_id); }
+      return r.error;
+    } });
+  const act = (fn, id, done, ask) => async () => {
+    if (ask && !confirm(ask)) return;
+    const r = await db.rpc(fn, { p_plan: id });
+    if (r.error) toast(r.error.message, true); else { toast(done); reloadAnimal(a.animal_id); }
+  };
+  const card = (p, buttons) => h('div', { class: 'card' }, h('div', { class: 'row' },
+    h('div', {}, h('span', { class: 'chip' }, p.category), ' ', p.instructions,
+      h('div', { class: 'muted small' }, p.status === 'Draft' ? 'Draft: not active yet'
+        : `Approved by ${state.people[p.approved_by] || 'unknown'} \u00B7 since ${p.effective_from}`)),
+    admin ? buttons : null));
+  return h('div', {},
+    h('div', { class: 'row' }, h('h2', { class: 'section' }, 'Care plans'), admin ? h('button', { class: 'primary', onclick: add }, '+ Add') : null),
+    live.length ? live.map((p) => card(p, h('button', { onclick: act('end_care_plan', p.id, 'Plan ended', 'End this care plan? Tasks linked to it will stop.') }, 'End')))
+                : h('p', { class: 'muted small' }, 'No active care plans.'),
+    drafts.map((p) => card(p, h('div', { class: 'chips' },
+      h('button', { class: 'primary', onclick: act('approve_care_plan', p.id, 'Plan approved') }, 'Approve'),
+      h('button', { onclick: act('end_care_plan', p.id, 'Draft discarded', 'Discard this draft?') }, 'Discard')))));
+}
+
 // ---------- animals ----------
 async function showAnimals() {
   state.reload = showAnimals;
@@ -550,7 +589,7 @@ async function showAnimal(a) {
   const [animal, alerts, plans, obs, asg, types] = await Promise.all([
     db.from('animals').select('*').eq('id', a.animal_id).single(),
     db.from('animal_alerts').select('*').eq('animal_id', a.animal_id).eq('status', 'Active').order('created_at', { ascending: false }),
-    a.episode_id ? db.from('care_plans').select('*').eq('episode_id', a.episode_id).eq('status', 'Active') : Promise.resolve({ data: [] }),
+    a.episode_id ? db.from('care_plans').select('*').eq('episode_id', a.episode_id).in('status', ['Active', 'Draft']) : Promise.resolve({ data: [] }),
     db.from('observations').select('*').eq('animal_id', a.animal_id).order('observed_at', { ascending: false }).limit(10),
     isAdmin && a.episode_id ? db.from('task_assignments').select('*').eq('episode_id', a.episode_id).eq('active', true).order('scheduled_time') : Promise.resolve({ data: [] }),
     isAdmin ? getTaskTypes() : Promise.resolve([]),
@@ -561,7 +600,8 @@ async function showAnimal(a) {
 
   const an = animal.data;
   const liveAlerts = alerts.data.filter((x) => x.start_date <= today && (!x.expiration_date || x.expiration_date >= today));
-  const livePlans = plans.data.filter((p) => p.effective_from <= today && (!p.effective_to || p.effective_to > today));
+  const livePlans = plans.data.filter((p) => p.status === 'Active' && p.effective_from <= today && (!p.effective_to || p.effective_to > today));
+  const drafts = isAdmin ? plans.data.filter((p) => p.status === 'Draft') : [];
   const info = [['Species', an.species], ['Breed', an.breed], ['Sex', an.sex], ['Born', an.dob], ['Notes', an.internal_notes]].filter(([, val]) => val);
 
   const cat = h('select', {}, ['Behavior', 'Appetite', 'Mobility', 'Appearance', 'Pain', 'Other'].map((c) => h('option', { value: c }, c)));
@@ -588,15 +628,14 @@ async function showAnimal(a) {
       a.primary_caregiver ? h('div', { class: 'muted small', style: 'margin-top:6px' }, 'Primary caregiver: ' + a.primary_caregiver) : null,
       info.length ? h('dl', {}, info.map(([k, val]) => [h('dt', {}, k), h('dd', {}, val)])) : null),
     liveAlerts.length ? [h('h2', { class: 'section overdue' }, 'Alerts'), liveAlerts.map((x) => h('div', { class: 'alert' }, `\u26A0 ${x.alert_text}`))] : null,
-    livePlans.length ? [h('h2', { class: 'section' }, 'Current care plans'),
-      livePlans.map((p) => h('div', { class: 'card' }, h('span', { class: 'chip' }, p.category), ' ', p.instructions))] : null,
+    livePlans.length || isAdmin ? carePlansBlock(a, livePlans, drafts, isAdmin) : null,
     h('h2', { class: 'section' }, 'Recent observations'),
     obs.data.length ? obs.data.map((x) => h('div', { class: 'card' },
       h('div', { class: 'row' }, h('span', { class: 'muted small' }, `${fmtWhen(x.observed_at)} · ${state.people[x.observed_by] || 'Unknown'} · ${x.category}`),
         h('span', { class: 'chip ' + x.severity.toLowerCase() }, x.severity)),
       h('div', { style: 'margin-top:6px' }, x.observation))) : h('p', { class: 'muted' }, 'None recorded.'),
     a.episode_id ? animalActions(a, an) : null,
-    isAdmin && a.episode_id ? recurringCard(a, asg.data, types) : null,
+    isAdmin && a.episode_id ? recurringCard(a, asg.data, types, livePlans) : null,
     a.episode_id ? h('div', { class: 'card' }, h('div', { class: 'title' }, 'Add an observation'), cat, sev, text, err, add)
                  : h('p', { class: 'muted small' }, 'This animal has no current stay, so observations cannot be added.')));
 }

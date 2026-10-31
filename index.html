@@ -414,8 +414,21 @@ function animalActions(a) {
     fields: [{ key: 'status', label: 'New status', type: 'select', options: opts(list), required: true }, { key: 'reason', label: 'Reason (optional)' }],
     onSubmit: async (v) => { const r = await db.rpc('change_status', { p_animal: a.animal_id, p_kind: kind, p_status: v.status, p_reason: v.reason });
       if (!r.error) { toast('Status updated'); reloadAnimal(a.animal_id); } return r.error; } });
+  const giveBack = async () => {
+    const locs = await locationOptions();
+    openForm({ title: `Return ${a.animal_name} to the rescue`, submit: 'Record return',
+      fields: [{ key: 'loc', label: 'Where is the animal going?', type: 'select', options: locs, required: true },
+        { key: 'reason', label: 'Reason for return', value: 'Returned by adopter', required: true }, { key: 'notes', label: 'Notes', type: 'textarea' }],
+      onSubmit: async (v) => {
+        if (!confirm('This ends the current stay and starts a new one. Continue?')) return { message: 'Cancelled.' };
+        const r = await db.rpc('return_animal', { p_animal: a.animal_id, p_location: v.loc, p_reason: v.reason, p_notes: v.notes });
+        if (!r.error) { toast('Return recorded'); reloadAnimal(a.animal_id); }
+        return r.error;
+      } });
+  };
   return h('div', { class: 'card' }, h('div', { class: 'title' }, 'Actions'),
     h('div', { class: 'chips' }, h('button', { onclick: move }, 'Move'),
+      admin && a.rescue_status === 'Adopted' ? h('button', { class: 'primary', onclick: giveBack }, 'Return to rescue') : null,
       admin ? h('button', { onclick: status('rescue', ['Intake', 'Quarantine', 'Available', 'Adoption Pending', 'Adopted', 'Returned'], 'Rescue status') }, 'Change status') : null,
       admin ? h('button', { onclick: status('medical', ['Evaluation Pending', 'Routine', 'Restricted Activity', 'Needs Follow-up'], 'Medical status') }, 'Medical status') : null));
 }

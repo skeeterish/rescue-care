@@ -329,6 +329,85 @@ function openLogModal(o, existing = null) {
   document.body.append(overlay);
 }
 
+// ---------- admin and movement actions ----------
+// A simple pop-up form. fields: [{ key, label, type, options, required }]; onSubmit(values) returns an error or null
+function openForm({ title, fields, submit, onSubmit }) {
+  const inputs = fields.map((f) => ({ f, el: f.type === 'select'
+    ? h('select', {}, f.options.map((o) => h('option', { value: o.value }, o.label)))
+    : f.type === 'textarea' ? h('textarea', { rows: 3 }) : h('input', { type: f.type || 'text' }) }));
+  const err = h('p', { class: 'error' });
+  const close = () => overlay.remove();
+  const save = h('button', { class: 'primary', onclick: async () => {
+    err.textContent = '';
+    const vals = {};
+    for (const { f, el } of inputs) {
+      const val = el.value.trim();
+      if (f.required && !val) { err.textContent = f.label + ' is required.'; return; }
+      vals[f.key] = val === '' ? null : val;
+    }
+    save.disabled = true;
+    const error = await onSubmit(vals);
+    if (error) { err.textContent = error.message; save.disabled = false; return; }
+    close();
+  } }, submit || 'Save');
+  const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+    h('div', { class: 'sheet' }, h('div', { class: 'title' }, title),
+      inputs.map(({ f, el }) => h('label', { class: 'muted small' }, f.label + (f.required ? ' *' : ''), el)),
+      err, h('div', { class: 'btns' }, h('button', { onclick: close }, 'Cancel'), save)));
+  document.body.append(overlay);
+}
+
+async function locationOptions() {
+  const r = await db.from('locations').select('id, name').eq('active', true);
+  return (r.data || []).sort((x, y) => x.name.localeCompare(y.name, undefined, { numeric: true })).map((l) => ({ value: l.id, label: l.name }));
+}
+const peopleOptions = () => [{ value: '', label: '(none)' }, ...Object.entries(state.people).map(([id, name]) => ({ value: id, label: name }))];
+const opts = (list) => list.map((x) => ({ value: x, label: x }));
+async function reloadAnimal(id) {
+  const r = await db.from('animal_current_state').select('*').eq('animal_id', id).single();
+  if (!r.error) showAnimal(r.data); else showAnimals();
+}
+
+function addAnimalBtn() {
+  return h('button', { class: 'primary', style: 'width:100%;margin-top:8px', onclick: async () => {
+    const locs = await locationOptions();
+    openForm({ title: 'Add an animal', submit: 'Add animal',
+      fields: [
+        { key: 'name', label: 'Name', required: true }, { key: 'species', label: 'Species (Dog, Cat...)', required: true },
+        { key: 'breed', label: 'Breed' }, { key: 'sex', label: 'Sex', type: 'select', options: [{ value: '', label: '(unknown)' }, ...opts(['Male', 'Female', 'Unknown'])] },
+        { key: 'dob', label: 'Date of birth', type: 'date' },
+        { key: 'location', label: 'Starting location', type: 'select', options: locs, required: true },
+        { key: 'status', label: 'Starting status', type: 'select', options: opts(['Intake', 'Quarantine', 'Available']), required: true },
+        { key: 'caregiver', label: 'Primary caregiver', type: 'select', options: peopleOptions() },
+        { key: 'notes', label: 'Notes', type: 'textarea' }],
+      onSubmit: async (v) => {
+        const r = await db.rpc('admin_add_animal', { p_name: v.name, p_species: v.species, p_breed: v.breed, p_sex: v.sex, p_dob: v.dob,
+          p_location: v.location, p_status: v.status, p_caregiver: v.caregiver, p_notes: v.notes });
+        if (!r.error) { toast('Animal added'); showAnimals(); }
+        return r.error;
+      } });
+  } }, '+ Add animal');
+}
+
+function animalActions(a) {
+  const admin = state.me.role === 'Admin';
+  const move = async () => {
+    const locs = await locationOptions();
+    openForm({ title: `Move ${a.animal_name}`, submit: 'Move',
+      fields: [{ key: 'loc', label: 'New location', type: 'select', options: locs, required: true }, { key: 'reason', label: 'Reason (optional)' }],
+      onSubmit: async (v) => { const r = await db.rpc('move_animal', { p_animal: a.animal_id, p_location: v.loc, p_reason: v.reason });
+        if (!r.error) { toast('Moved'); reloadAnimal(a.animal_id); } return r.error; } });
+  };
+  const status = (kind, list, label) => () => openForm({ title: `${label}: ${a.animal_name}`, submit: 'Save',
+    fields: [{ key: 'status', label: 'New status', type: 'select', options: opts(list), required: true }, { key: 'reason', label: 'Reason (optional)' }],
+    onSubmit: async (v) => { const r = await db.rpc('change_status', { p_animal: a.animal_id, p_kind: kind, p_status: v.status, p_reason: v.reason });
+      if (!r.error) { toast('Status updated'); reloadAnimal(a.animal_id); } return r.error; } });
+  return h('div', { class: 'card' }, h('div', { class: 'title' }, 'Actions'),
+    h('div', { class: 'chips' }, h('button', { onclick: move }, 'Move'),
+      admin ? h('button', { onclick: status('rescue', ['Intake', 'Quarantine', 'Available', 'Adoption Pending', 'Adopted', 'Returned'], 'Rescue status') }, 'Change status') : null,
+      admin ? h('button', { onclick: status('medical', ['Evaluation Pending', 'Routine', 'Restricted Activity', 'Needs Follow-up'], 'Medical status') }, 'Medical status') : null));
+}
+
 // ---------- animals ----------
 async function showAnimals() {
   state.reload = showAnimals;
@@ -336,8 +415,9 @@ async function showAnimals() {
   if (state.tab !== 'animals') return;
   const v = state.$view;
   if (error) return v.replaceChildren(errorBox(error.message));
-  if (!data.length) return v.replaceChildren(h('div', { class: 'card' }, 'No animals yet.'));
-  v.replaceChildren(...data.map((a) => h('div', { class: 'card clickable', role: 'button', onclick: () => showAnimal(a) },
+  const adminAdd = state.me.role === 'Admin' ? [addAnimalBtn()] : [];
+  if (!data.length) return v.replaceChildren(...adminAdd, h('div', { class: 'card' }, 'No animals yet.'));
+  v.replaceChildren(...adminAdd, ...data.map((a) => h('div', { class: 'card clickable', role: 'button', onclick: () => showAnimal(a) },
     h('div', { class: 'row' }, h('span', { class: 'title' }, a.animal_name),
       a.active_alert_count > 0 ? h('span', { class: 'chip warn' }, `\u26A0 ${a.active_alert_count} alert${a.active_alert_count > 1 ? 's' : ''}`) : null),
     h('div', { class: 'chips' }, [a.rescue_status, a.medical_status, a.location_name].filter(Boolean).map((t) => h('span', { class: 'chip' }, t))),
@@ -395,6 +475,7 @@ async function showAnimal(a) {
       h('div', { class: 'row' }, h('span', { class: 'muted small' }, `${fmtWhen(x.observed_at)} · ${state.people[x.observed_by] || 'Unknown'} · ${x.category}`),
         h('span', { class: 'chip ' + x.severity.toLowerCase() }, x.severity)),
       h('div', { style: 'margin-top:6px' }, x.observation))) : h('p', { class: 'muted' }, 'None recorded.'),
+    a.episode_id ? animalActions(a) : null,
     a.episode_id ? h('div', { class: 'card' }, h('div', { class: 'title' }, 'Add an observation'), cat, sev, text, err, add)
                  : h('p', { class: 'muted small' }, 'This animal has no current episode, so observations cannot be added.')));
 }

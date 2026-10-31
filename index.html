@@ -345,6 +345,8 @@ function openForm({ title, fields, submit, onSubmit }) {
     return el;
   };
   const inputs = fields.map((f) => ({ f, el: makeInput(f) }));
+  const byKey = Object.fromEntries(inputs.map(({ f, el }) => [f.key, el]));
+  for (const { f, el } of inputs) if (f.onchange) { el.addEventListener('change', () => f.onchange(el.value, byKey)); f.onchange(el.value, byKey); }
   const err = h('p', { class: 'error' });
   const close = () => overlay.remove();
   const save = h('button', { class: 'primary', onclick: async () => {
@@ -421,7 +423,7 @@ function animalActions(a) {
 const DAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']];
 async function getTaskTypes() {
   if (!state.taskTypes) {
-    const r = await db.from('task_types').select('id, task_name, requires_animal').eq('active', true).order('task_name');
+    const r = await db.from('task_types').select('id, task_name, category, requires_animal').eq('active', true).order('task_name');
     state.taskTypes = r.data || [];
   }
   return state.taskTypes;
@@ -432,12 +434,14 @@ function recurringCard(a, list, types) {
   const name = (id) => (types.find((t) => t.id === id) || {}).task_name || 'Task';
   const add = () => openForm({ title: `Add a recurring task: ${a.animal_name}`, submit: 'Add task',
     fields: [
-      { key: 'type', label: 'Task', type: 'select', required: true, options: types.filter((t) => t.requires_animal).map((t) => ({ value: t.id, label: t.task_name })) },
+      { key: 'type', label: 'Task', type: 'select', required: true, options: types.filter((t) => t.requires_animal).map((t) => ({ value: t.id, label: t.task_name })),
+        onchange: (val, els) => { const t = types.find((x) => x.id === val); els.fresh.querySelector('input').checked = !!t && t.category === 'Medical'; } },
       { key: 'who', label: 'Assigned to', type: 'select', options: peopleOptions() },
       { key: 'time', label: 'Time of day', type: 'time', required: true },
       { key: 'repeat', label: 'Repeats', type: 'select', options: [{ value: 'daily', label: 'Every day' }, { value: 'days', label: 'Selected days only' }] },
       { key: 'days', label: 'Days (only if "Selected days")', type: 'checks', options: DAYS.map(([value, label]) => ({ value, label })) },
       { key: 'start', label: 'Starts', type: 'date', required: true, value: localDate(new Date()) },
+      { key: 'fresh', label: 'If starting today', type: 'checks', options: [{ value: 'day', label: 'Start from beginning of day' }] },
       { key: 'end', label: 'Ends (optional)', type: 'date' },
       { key: 'instr', label: 'Instructions (shown to volunteers)', type: 'textarea' }],
     onSubmit: async (v) => {
@@ -446,7 +450,8 @@ function recurringCard(a, list, types) {
         rescue_id: state.me.rescue_id, animal_id: a.animal_id, episode_id: a.episode_id, task_type_id: v.type, assigned_to: v.who,
         frequency: v.repeat === 'days' ? 'Weekly' : 'Daily', scheduled_time: v.time,
         days_of_week: v.repeat === 'days' ? v.days.split(',').map(Number) : null,
-        start_date: v.start, end_date: v.end, instructions: v.instr });
+        start_date: v.start, end_date: v.end, instructions: v.instr,
+        start_from: !v.fresh && v.start === localDate(new Date()) ? new Date().toISOString() : null });
       if (!r.error) { toast('Task added'); reloadAnimal(a.animal_id); }
       return r.error;
     } });

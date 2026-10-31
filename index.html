@@ -42,6 +42,10 @@
   .task { border-left: 6px solid var(--line); }
   .task.overdue { border-left-color: var(--red); } .task.soon { border-left-color: var(--amber); }
   .task.later { border-left-color: var(--blue); } .task.done { border-left-color: var(--green); opacity: .75; }
+  .daytabs { display: flex; gap: 6px; margin: 4px 0 8px; }
+  .daytabs button { flex: 1; background: var(--card); border: 1px solid var(--line); color: var(--muted); font-weight: 600; min-height: 40px; padding: 8px 6px; }
+  .daytabs button.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .task.preview { border-left-color: var(--line); opacity: .7; }
   .instr { margin-top: 8px; padding: 8px 10px; background: var(--bg); border-radius: 8px; font-size: 14px; }
   .alert { margin-top: 8px; padding: 8px 10px; background: var(--red-bg); color: var(--red); border-radius: 8px; font-size: 14px; font-weight: 600; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -81,7 +85,7 @@ const SUPABASE_KEY = 'sb_publishable_-HN6NaIybL85vhWwHP9ksA_2hpywK1p';
 
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $app = document.getElementById('app');
-const state = { me: null, rescue: null, tz: 'America/Denver', people: {}, tab: 'tasks', reload: null, timer: null, $view: null };
+const state = { me: null, rescue: null, tz: 'America/Denver', people: {}, tab: 'tasks', dayOffset: 0, reload: null, timer: null, $view: null };
 
 const OUTCOMES = [
   { value: 'Done',        label: 'Done',                      status: 'Completed' },
@@ -189,6 +193,7 @@ function renderShell() {
   setTab(state.tab);
 }
 function setTab(name) {
+  if (name === 'tasks' && state.tab !== 'tasks') state.dayOffset = 0;
   state.tab = name;
   document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   state.$view.replaceChildren(loading());
@@ -196,10 +201,21 @@ function setTab(name) {
 }
 
 // ---------- tasks ----------
+const dayShift = (dateStr, n) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+};
+
+function dayTabs(today) {
+  const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(new Date(dayShift(today, 2) + 'T12:00:00Z'));
+  return h('div', { class: 'daytabs' }, ['Today', 'Tomorrow', weekday].map((label, i) =>
+    h('button', { class: i === state.dayOffset ? 'active' : '', onclick: () => { state.dayOffset = i; state.$view.replaceChildren(loading()); showTasks(); } }, label)));
+}
+
 async function showTasks() {
   state.reload = showTasks;
   const from = new Date(Date.now() - 36 * 3600e3).toISOString();
-  const to = new Date(Date.now() + 36 * 3600e3).toISOString();
+  const to = new Date(Date.now() + 96 * 3600e3).toISOString();
   const { data, error } = await db.from('task_list').select('*').gte('scheduled_at', from).lte('scheduled_at', to).order('scheduled_at');
   if (state.tab !== 'tasks') return;
   const v = state.$view;
@@ -207,7 +223,20 @@ async function showTasks() {
 
   const now = new Date();
   const today = localDate(now);
-  const rows = data.filter((o) => localDate(o.scheduled_at) === today || (o.status === 'Scheduled' && new Date(o.scheduled_at) < now));
+  const tabs = dayTabs(today);
+  const live = data.filter((o) => o.status !== 'Not Applicable');   // cancelled tasks are hidden
+
+  // Tomorrow and the day after: a read-only preview. They can still change until they come due.
+  if (state.dayOffset > 0) {
+    const target = dayShift(today, state.dayOffset);
+    const rows = live.filter((o) => localDate(o.scheduled_at) === target);
+    v.replaceChildren(tabs,
+      h('p', { class: 'muted small' }, 'Preview only. These can change until they come due.'),
+      rows.length ? rows.map((o) => taskCard(o, 'preview')) : h('div', { class: 'card' }, 'Nothing scheduled for this day yet.'));
+    return;
+  }
+
+  const rows = live.filter((o) => localDate(o.scheduled_at) === today || (o.status === 'Scheduled' && new Date(o.scheduled_at) < now));
   const groups = { overdue: [], soon: [], later: [], done: [] };
   for (const o of rows) {
     if (o.status !== 'Scheduled') { groups.done.push(o); continue; }
@@ -219,11 +248,11 @@ async function showTasks() {
     : [];
 
   if (!rows.length) {
-    v.replaceChildren(h('div', { class: 'card' }, h('p', {}, 'No tasks are scheduled for today.'),
-      h('p', { class: 'muted small' }, 'If you expected some, ask an administrator to check that today\'s tasks have been generated.')));
+    v.replaceChildren(tabs, h('div', { class: 'card' }, h('p', {}, 'No tasks are scheduled for today.'),
+      h('p', { class: 'muted small' }, 'If you expected some, ask an administrator to check the assignments.')));
     return;
   }
-  v.replaceChildren(...section('overdue', 'Overdue'), ...section('soon', 'Due within the hour'),
+  v.replaceChildren(tabs, ...section('overdue', 'Overdue'), ...section('soon', 'Due within the hour'),
     ...section('later', 'Later today'), ...section('done', 'Done'));
 }
 
@@ -235,7 +264,7 @@ function taskCard(o, kind) {
       h('div', {},
         h('div', { class: 'title' }, o.animal_name ? `${o.task_name}: ${o.animal_name}` : o.task_name),
         h('div', { class: 'muted small' }, [fmtWhen(o.scheduled_at), o.location_name, who].filter(Boolean).join(' · '))),
-      kind === 'done' ? h('span', { class: 'chip' }, o.status) : h('button', { class: 'primary', onclick: () => openLogModal(o) }, 'Log')),
+      kind === 'done' ? h('span', { class: 'chip' }, o.status) : kind === 'preview' ? null : h('button', { class: 'primary', onclick: () => openLogModal(o) }, 'Log')),
     o.instruction_snapshot ? h('div', { class: 'instr' }, o.instruction_snapshot) : null,
     alerts.map((a) => h('div', { class: 'alert' }, '\u26A0 ' + a)));
 }

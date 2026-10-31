@@ -191,7 +191,7 @@ function renderShell() {
         h('button', { class: 'ghost', onclick: () => state.reload && state.reload() }, 'Refresh'),
         h('button', { class: 'ghost', onclick: signOut }, 'Sign out'))),
     state.$view,
-    h('nav', { class: 'tabs' }, tabBtn('tasks', 'Tasks'), tabBtn('animals', 'Animals')));
+    h('nav', { class: 'tabs' }, tabBtn('tasks', 'Tasks'), tabBtn('animals', 'Animals'), state.me.role === 'Admin' ? tabBtn('facility', 'Facility') : null));
   setTab(state.tab);
 }
 function setTab(name) {
@@ -199,7 +199,7 @@ function setTab(name) {
   state.tab = name;
   document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   state.$view.replaceChildren(loading());
-  if (name === 'tasks') showTasks(); else showAnimals();
+  if (name === 'tasks') showTasks(); else if (name === 'facility') showFacility(); else showAnimals();
 }
 
 // ---------- tasks ----------
@@ -447,9 +447,9 @@ const clock = (t) => { const [hh, mm] = t.split(':').map(Number); return `${((hh
 
 function recurringCard(a, list, types) {
   const name = (id) => (types.find((t) => t.id === id) || {}).task_name || 'Task';
-  const add = () => openForm({ title: `Add a recurring task: ${a.animal_name}`, submit: 'Add task',
+  const add = () => openForm({ title: `Add a recurring task: ${a ? a.animal_name : 'facility'}`, submit: 'Add task',
     fields: [
-      { key: 'type', label: 'Task', type: 'select', required: true, options: types.filter((t) => t.requires_animal).map((t) => ({ value: t.id, label: t.task_name })),
+      { key: 'type', label: 'Task', type: 'select', required: true, options: types.filter((t) => !!a === t.requires_animal).map((t) => ({ value: t.id, label: t.task_name })),
         onchange: (val, els) => { const t = types.find((x) => x.id === val); els.fresh.querySelector('input').checked = !!t && t.category === 'Medical'; } },
       { key: 'who', label: 'Assigned to', type: 'select', options: peopleOptions() },
       { key: 'time', label: 'Time of day', type: 'time', required: true },
@@ -464,25 +464,48 @@ function recurringCard(a, list, types) {
       if (v.repeat === 'days' && !v.days) return { message: 'Pick at least one day.' };
       const times = [...new Set([v.time, v.time2, v.time3, v.time4].filter(Boolean))];
       const r = await db.from('task_assignments').insert(times.map((tm) => ({
-        rescue_id: state.me.rescue_id, animal_id: a.animal_id, episode_id: a.episode_id, task_type_id: v.type, assigned_to: v.who,
+        rescue_id: state.me.rescue_id, animal_id: a ? a.animal_id : null, episode_id: a ? a.episode_id : null, task_type_id: v.type, assigned_to: v.who,
         frequency: v.repeat === 'days' ? 'Weekly' : 'Daily', scheduled_time: tm,
         days_of_week: v.repeat === 'days' ? v.days.split(',').map(Number) : null,
         start_date: v.start, end_date: v.end, instructions: v.instr,
         start_from: !v.fresh && v.start === localDate(new Date()) ? new Date().toISOString() : null })));
-      if (!r.error) { toast(times.length > 1 ? 'Tasks added' : 'Task added'); reloadAnimal(a.animal_id); }
+      if (!r.error) { toast(times.length > 1 ? 'Tasks added' : 'Task added'); a ? reloadAnimal(a.animal_id) : showFacility(); }
       return r.error;
     } });
   const end = async (x) => {
     if (!confirm('End this recurring task? Upcoming occurrences will be cancelled; past ones are kept.')) return;
     const today = localDate(new Date());
     const r = await db.from('task_assignments').update({ active: false, end_date: x.start_date > today ? x.start_date : today }).eq('id', x.id);
-    if (r.error) toast(r.error.message, true); else { toast('Task ended'); reloadAnimal(a.animal_id); }
+    if (r.error) toast(r.error.message, true); else { toast('Task ended'); a ? reloadAnimal(a.animal_id) : showFacility(); }
   };
-  return h('div', { class: 'card' }, h('div', { class: 'row' }, h('div', { class: 'title' }, 'Recurring tasks'), h('button', { class: 'primary', onclick: add }, '+ Add')),
+  return h('div', { class: 'card' }, h('div', { class: 'row' }, h('div', { class: 'title' }, a ? 'Recurring tasks' : 'Facility tasks'), h('button', { class: 'primary', onclick: add }, '+ Add')),
     list.length ? list.map((x) => h('div', { class: 'instr row' },
       h('div', {}, `${name(x.task_type_id)} \u00B7 ${clock(x.scheduled_time)} \u00B7 ${x.days_of_week ? x.days_of_week.map((d) => DAYS[d - 1][1]).join(', ') : 'Every day'}`,
         h('div', { class: 'muted small' }, [state.people[x.assigned_to] || 'Unassigned', x.instructions].filter(Boolean).join(' \u00B7 '))),
       h('button', { onclick: () => end(x) }, 'End'))) : h('p', { class: 'muted small' }, 'No recurring tasks yet.'));
+}
+
+// ---------- facility tasks (admins) ----------
+async function showFacility() {
+  state.reload = showFacility;
+  const [asg, types] = await Promise.all([
+    db.from('task_assignments').select('*').is('animal_id', null).eq('active', true).order('scheduled_time'), getTaskTypes()]);
+  if (state.tab !== 'facility') return;
+  const v = state.$view;
+  if (asg.error) return v.replaceChildren(errorBox(asg.error.message));
+  const kinds = types.filter((t) => !t.requires_animal).map((t) => t.task_name);
+  const newKind = () => openForm({ title: 'New kind of facility task', submit: 'Create',
+    fields: [{ key: 'name', label: 'Name (e.g. Wash laundry)', required: true }],
+    onSubmit: async (val) => {
+      const r = await db.from('task_types').insert({ rescue_id: state.me.rescue_id, task_name: val.name, category: 'Facility',
+        requires_animal: false, requires_details: false, detail_type: 'Simple' });
+      if (!r.error) { state.taskTypes = null; toast('Created'); showFacility(); }
+      return r.error;
+    } });
+  v.replaceChildren(h('div', {}, recurringCard(null, asg.data, types),
+    h('div', { class: 'card' }, h('div', { class: 'row' },
+      h('div', { class: 'muted small' }, 'Kinds of facility task: ' + (kinds.join(', ') || 'none yet')),
+      h('button', { onclick: newKind }, '+ New kind')))));
 }
 
 // ---------- animals ----------

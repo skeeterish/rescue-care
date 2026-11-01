@@ -84,6 +84,7 @@
 const SUPABASE_URL = 'https://vrwkosctkbuppdiisjhp.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_-HN6NaIybL85vhWwHP9ksA_2hpywK1p';
 
+const INITIAL_HASH = location.hash;   // read before the library tidies it away (invite and reset links use it)
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $app = document.getElementById('app');
 const state = { me: null, rescue: null, tz: 'America/Denver', people: {}, tab: 'tasks', dayOffset: 0, progress: {}, reload: null, timer: null, $view: null };
@@ -129,7 +130,8 @@ const loading = () => h('p', { class: 'muted center' }, 'Loading...');
 // ---------- start-up and sign-in ----------
 async function start() {
   const { data } = await db.auth.getSession();
-  if (data.session) boot(data.session.user); else showLogin();
+  if (data.session && /type=(recovery|invite)/.test(INITIAL_HASH)) showSetPassword(data.session.user);
+  else if (data.session) boot(data.session.user); else showLogin();
 }
 
 function showLogin() {
@@ -138,13 +140,19 @@ function showLogin() {
   const pw = h('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password', required: true });
   const msg = h('p', { class: 'error' });
   const btn = h('button', { type: 'submit', class: 'primary' }, 'Sign in');
+  const forgot = h('button', { type: 'button', class: 'ghost', onclick: async () => {
+    msg.textContent = '';
+    if (!email.value.trim()) { msg.textContent = 'Type your email above first.'; return; }
+    const { error } = await db.auth.resetPasswordForEmail(email.value.trim(), { redirectTo: location.origin + location.pathname });
+    msg.textContent = error ? error.message : 'If that email has an account, a reset link is on its way.';
+  } }, 'Forgot password?');
   const form = h('form', { class: 'card login', onsubmit: async (e) => {
     e.preventDefault(); msg.textContent = ''; btn.disabled = true;
     const { data, error } = await db.auth.signInWithPassword({ email: email.value.trim(), password: pw.value });
     btn.disabled = false;
     if (error) { msg.textContent = error.message; return; }
     boot(data.user);
-  } }, h('h1', {}, 'Rescue Care'), h('p', { class: 'muted' }, 'Sign in with the account an administrator created for you.'), email, pw, btn, msg);
+  } }, h('h1', {}, 'Rescue Care'), h('p', { class: 'muted' }, 'Sign in with the account an administrator created for you.'), email, pw, btn, forgot, msg);
   $app.replaceChildren(form);
 }
 
@@ -181,6 +189,38 @@ async function boot(user) {
 }
 function stopTimer() { if (state.timer) clearInterval(state.timer); state.timer = null; }
 
+// ---------- passwords ----------
+function passwordForm(submitLabel, onDone) {
+  const pw1 = h('input', { type: 'password', placeholder: 'New password (at least 8 characters)', autocomplete: 'new-password' });
+  const pw2 = h('input', { type: 'password', placeholder: 'Type it again', autocomplete: 'new-password' });
+  const msg = h('p', { class: 'error' });
+  const btn = h('button', { class: 'primary', onclick: async () => {
+    msg.textContent = '';
+    if (pw1.value.length < 8) { msg.textContent = 'Use at least 8 characters.'; return; }
+    if (pw1.value !== pw2.value) { msg.textContent = 'The two passwords do not match.'; return; }
+    btn.disabled = true;
+    const { error } = await db.auth.updateUser({ password: pw1.value });
+    if (error) { msg.textContent = error.message; btn.disabled = false; return; }
+    onDone();
+  } }, submitLabel);
+  return { fields: [pw1, pw2, msg], btn };
+}
+
+function showSetPassword(user) {
+  const f = passwordForm('Save password', () => { history.replaceState(null, '', location.pathname); toast('Password saved'); boot(user); });
+  $app.replaceChildren(h('div', { class: 'card login' }, h('h1', {}, 'Set your password'),
+    h('p', { class: 'muted' }, 'Choose a password to finish setting up your account.'), ...f.fields, f.btn));
+}
+
+function openChangePassword() {
+  const close = () => overlay.remove();
+  const f = passwordForm('Change password', () => { close(); toast('Password changed'); });
+  const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
+    h('div', { class: 'sheet' }, h('div', { class: 'title' }, 'Change password'), ...f.fields,
+      h('div', { class: 'btns' }, h('button', { onclick: close }, 'Cancel'), f.btn)));
+  document.body.append(overlay);
+}
+
 // ---------- page frame ----------
 function renderShell() {
   const tabBtn = (name, label) => h('button', { 'data-tab': name, onclick: () => setTab(name) }, label);
@@ -190,6 +230,7 @@ function renderShell() {
       h('div', {}, h('strong', {}, state.rescue.name), h('div', { class: 'muted small' }, `${state.me.name} (${state.me.role})`)),
       h('div', { class: 'hdr-actions' },
         h('button', { class: 'ghost', onclick: () => state.reload && state.reload() }, 'Refresh'),
+        h('button', { class: 'ghost', onclick: openChangePassword }, 'Password'),
         h('button', { class: 'ghost', onclick: signOut }, 'Sign out'))),
     state.$view,
     h('nav', { class: 'tabs' }, tabBtn('tasks', 'Tasks'), tabBtn('animals', 'Animals'), state.me.role === 'Admin' ? tabBtn('facility', 'Facility') : null));

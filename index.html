@@ -48,6 +48,7 @@
   .task.preview { border-left-color: var(--line); opacity: .7; }
   .instr { margin-top: 8px; padding: 8px 10px; background: var(--bg); border-radius: 8px; font-size: 14px; }
   .alert { margin-top: 8px; padding: 8px 10px; background: var(--red-bg); color: var(--red); border-radius: 8px; font-size: 14px; font-weight: 600; }
+  .alert.pending { background: var(--amber-bg); color: var(--amber); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .chip { display: inline-block; padding: 3px 9px; border-radius: 99px; font-size: 13px; background: var(--bg); border: 1px solid var(--line); }
   .chip.warn { background: var(--red-bg); color: var(--red); border-color: transparent; font-weight: 600; }
@@ -589,6 +590,60 @@ function carePlansBlock(a, live, drafts, admin, types = []) {
       h('button', { onclick: act('end_care_plan', p.id, 'Draft discarded', 'Discard this draft?') }, 'Discard')))));
 }
 
+// ---------- alerts ----------
+const reviewForms = (x, onDone) => ({
+  approve: () => openForm({ title: 'Approve alert', submit: 'Approve and activate',
+    fields: [{ key: 'text', label: 'Alert text (reword if you like)', type: 'textarea', required: true, value: x.alert_text },
+      { key: 'pri', label: 'Priority', type: 'select', options: opts(['Low', 'Normal', 'High', 'Urgent']), value: x.priority },
+      { key: 'exp', label: 'Expires on (optional; empty = keep until changed)', type: 'date' }, { key: 'note', label: 'Note (optional)' }],
+    onSubmit: async (v) => {
+      const r = await db.rpc('review_alert', { p_alert: x.id, p_decision: 'approve', p_note: v.note, p_text: v.text, p_priority: v.pri, p_expires: v.exp });
+      if (!r.error) onDone('Alert approved');
+      return r.error;
+    } }),
+  close: (decision, title) => () => openForm({ title, submit: 'Confirm', fields: [{ key: 'note', label: 'Note (what happened, or why)' }],
+    onSubmit: async (v) => {
+      const r = await db.rpc('review_alert', { p_alert: x.id, p_decision: decision, p_note: v.note });
+      if (!r.error) onDone(decision === 'resolve' ? 'Alert resolved' : 'Alert dismissed');
+      return r.error;
+    } }),
+});
+
+function alertsBlock(a, live, pending, admin) {
+  const done = (msg) => { toast(msg); reloadAnimal(a.animal_id); };
+  const add = () => openForm({ title: `New alert: ${a.animal_name}`, submit: 'Add alert',
+    fields: [{ key: 'cat', label: 'Category', type: 'select', required: true, options: opts(['Care', 'Behavior', 'Safety', 'Medical']) },
+      { key: 'text', label: 'Alert text (what volunteers should know)', type: 'textarea', required: true },
+      { key: 'pri', label: 'Priority', type: 'select', options: opts(['Normal', 'High', 'Urgent', 'Low']) },
+      { key: 'exp', label: 'Expires on (optional; empty = keep until changed)', type: 'date' }],
+    onSubmit: async (v) => {
+      const r = await db.from('animal_alerts').insert({ animal_id: a.animal_id, episode_id: a.episode_id, rescue_id: state.me.rescue_id,
+        category: v.cat, alert_text: v.text, created_by: state.me.id, status: 'Active', priority: v.pri, expiration_date: v.exp,
+        keep_until_changed: !v.exp, reviewed_by: state.me.id, reviewed_at: new Date().toISOString() });
+      if (!r.error) done('Alert added');
+      return r.error;
+    } });
+  return h('div', {},
+    h('div', { class: 'row' }, h('h2', { class: 'section overdue' }, 'Alerts'), admin && a.episode_id ? h('button', { class: 'primary', onclick: add }, '+ Add') : null),
+    live.length ? live.map((x) => { const f = reviewForms(x, done);
+      return h('div', { class: 'alert' }, h('div', { class: 'row' }, h('span', {}, `\u26A0 ${x.alert_text}`),
+        admin ? h('button', { onclick: f.close('resolve', 'Resolve alert') }, 'Resolve') : null)); })
+      : h('p', { class: 'muted small' }, 'No active alerts.'),
+    admin ? pending.map((x) => { const f = reviewForms(x, done);
+      return h('div', { class: 'alert pending' }, h('div', {}, `Waiting for review: ${x.alert_text}`,
+        h('div', { class: 'small' }, `Raised by ${state.people[x.created_by] || 'unknown'}`)),
+        h('div', { class: 'chips' }, h('button', { class: 'primary', onclick: f.approve }, 'Review'), h('button', { onclick: f.close('dismiss', 'Dismiss alert') }, 'Dismiss'))); })
+      : pending.length ? h('p', { class: 'muted small' }, `${pending.length} flagged alert${pending.length > 1 ? 's' : ''} waiting for admin review.`) : null);
+}
+
+const pendingCard = (x, name, onDone) => {
+  const f = reviewForms(x, (msg) => { toast(msg); onDone(); });
+  return h('div', { class: 'card' }, h('div', { class: 'row' },
+    h('div', {}, h('div', { class: 'title' }, name || 'Animal'), h('div', {}, x.alert_text),
+      h('div', { class: 'muted small' }, `Raised by ${state.people[x.created_by] || 'unknown'} \u00B7 ${x.priority} priority`)),
+    h('div', { class: 'chips' }, h('button', { class: 'primary', onclick: f.approve }, 'Review'), h('button', { onclick: f.close('dismiss', 'Dismiss alert') }, 'Dismiss'))));
+};
+
 // ---------- animals ----------
 async function showAnimals() {
   state.reload = showAnimals;
@@ -596,9 +651,17 @@ async function showAnimals() {
   if (state.tab !== 'animals') return;
   const v = state.$view;
   if (error) return v.replaceChildren(errorBox(error.message));
+  const queue = [];
+  if (state.me.role === 'Admin') {
+    const pr = await db.from('animal_alerts').select('*').eq('status', 'Pending Review').order('created_at');
+    if (state.tab !== 'animals') return;
+    const names = Object.fromEntries(data.map((r) => [r.animal_id, r.animal_name]));
+    if (!pr.error && pr.data.length) queue.push(h('h2', { class: 'section overdue' }, `Alerts waiting for review (${pr.data.length})`),
+      ...pr.data.map((x) => pendingCard(x, names[x.animal_id], showAnimals)));
+  }
   const adminAdd = state.me.role === 'Admin' ? [addAnimalBtn()] : [];
   if (!data.length) return v.replaceChildren(...adminAdd, h('div', { class: 'card' }, 'No animals yet.'));
-  v.replaceChildren(...adminAdd, ...data.map((a) => h('div', { class: 'card clickable', role: 'button', onclick: () => showAnimal(a) },
+  v.replaceChildren(...adminAdd, ...queue, ...data.map((a) => h('div', { class: 'card clickable', role: 'button', onclick: () => showAnimal(a) },
     h('div', { class: 'row' }, h('span', { class: 'title' }, a.animal_name),
       a.active_alert_count > 0 ? h('span', { class: 'chip warn' }, `\u26A0 ${a.active_alert_count} alert${a.active_alert_count > 1 ? 's' : ''}`) : null),
     h('div', { class: 'chips' }, [a.rescue_status, a.medical_status, a.location_name].filter(Boolean).map((t) => h('span', { class: 'chip' }, t))),
@@ -613,7 +676,7 @@ async function showAnimal(a) {
   const isAdmin = state.me.role === 'Admin';
   const [animal, alerts, plans, obs, asg, types] = await Promise.all([
     db.from('animals').select('*').eq('id', a.animal_id).single(),
-    db.from('animal_alerts').select('*').eq('animal_id', a.animal_id).eq('status', 'Active').order('created_at', { ascending: false }),
+    db.from('animal_alerts').select('*').eq('animal_id', a.animal_id).in('status', ['Active', 'Pending Review']).order('created_at', { ascending: false }),
     a.episode_id ? db.from('care_plans').select('*').eq('episode_id', a.episode_id).in('status', ['Active', 'Draft']) : Promise.resolve({ data: [] }),
     db.from('observations').select('*').eq('animal_id', a.animal_id).order('observed_at', { ascending: false }).limit(10),
     isAdmin && a.episode_id ? db.from('task_assignments').select('*').eq('episode_id', a.episode_id).eq('active', true).order('scheduled_time') : Promise.resolve({ data: [] }),
@@ -630,7 +693,8 @@ async function showAnimal(a) {
   }
 
   const an = animal.data;
-  const liveAlerts = alerts.data.filter((x) => x.start_date <= today && (!x.expiration_date || x.expiration_date >= today));
+  const liveAlerts = alerts.data.filter((x) => x.status === 'Active' && x.start_date <= today && (!x.expiration_date || x.expiration_date >= today));
+  const pendingAlerts = alerts.data.filter((x) => x.status === 'Pending Review');
   const livePlans = plans.data.filter((p) => p.status === 'Active' && p.effective_from <= today && (!p.effective_to || p.effective_to > today));
   const drafts = isAdmin ? plans.data.filter((p) => p.status === 'Draft') : [];
   const info = [['Species', an.species], ['Breed', an.breed], ['Sex', an.sex], ['Born', an.dob], ['Notes', an.internal_notes]].filter(([, val]) => val);
@@ -638,17 +702,18 @@ async function showAnimal(a) {
   const cat = h('select', {}, ['Behavior', 'Appetite', 'Mobility', 'Appearance', 'Pain', 'Other'].map((c) => h('option', { value: c }, c)));
   const sev = h('select', {}, ['Normal', 'Notable', 'Concerning', 'Urgent'].map((c) => h('option', { value: c }, c)));
   const text = h('textarea', { rows: 3, placeholder: 'What did you notice?' });
+  const flag = h('input', { type: 'checkbox', style: 'width:auto;margin:0 8px 0 0' });
+  const flagRow = h('label', { class: 'muted small', style: 'display:block;margin:6px 0' }, flag, isAdmin ? 'Raise as an alert (active right away)' : 'Flag for admin review as an alert');
+  sev.addEventListener('change', () => { flag.checked = ['Concerning', 'Urgent'].includes(sev.value); });
   const err = h('p', { class: 'error' });
   const add = h('button', { class: 'primary', onclick: async () => {
     err.textContent = '';
     if (!text.value.trim()) { err.textContent = 'Please describe what you noticed.'; return; }
     add.disabled = true;
-    const r = await db.from('observations').insert({
-      animal_id: a.animal_id, episode_id: a.episode_id, rescue_id: state.me.rescue_id, observed_at: new Date().toISOString(),
-      observed_by: state.me.id, category: cat.value, severity: sev.value, observation: text.value.trim(),
-    });
+    const r = await db.rpc('add_observation', { p_animal: a.animal_id, p_category: cat.value, p_severity: sev.value,
+      p_text: text.value.trim(), p_flag: flag.checked });
     if (r.error) { err.textContent = r.error.message; add.disabled = false; return; }
-    toast('Observation saved'); showAnimal(a);
+    toast(flag.checked ? (isAdmin ? 'Saved, and the alert is active' : 'Saved and flagged for admin review') : 'Observation saved'); showAnimal(a);
   } }, 'Save observation');
 
   v.replaceChildren(h('div', {},
@@ -658,7 +723,7 @@ async function showAnimal(a) {
       h('div', { class: 'chips' }, [a.rescue_status, a.medical_status, a.location_name].filter(Boolean).map((t) => h('span', { class: 'chip' }, t))),
       a.primary_caregiver ? h('div', { class: 'muted small', style: 'margin-top:6px' }, 'Primary caregiver: ' + a.primary_caregiver) : null,
       info.length ? h('dl', {}, info.map(([k, val]) => [h('dt', {}, k), h('dd', {}, val)])) : null),
-    liveAlerts.length ? [h('h2', { class: 'section overdue' }, 'Alerts'), liveAlerts.map((x) => h('div', { class: 'alert' }, `\u26A0 ${x.alert_text}`))] : null,
+    liveAlerts.length || pendingAlerts.length || isAdmin ? alertsBlock(a, liveAlerts, pendingAlerts, isAdmin) : null,
     livePlans.length || isAdmin ? carePlansBlock(a, livePlans, drafts, isAdmin, types) : null,
     h('h2', { class: 'section' }, 'Recent observations'),
     obs.data.length ? obs.data.map((x) => h('div', { class: 'card' },
@@ -667,7 +732,7 @@ async function showAnimal(a) {
       h('div', { style: 'margin-top:6px' }, x.observation))) : h('p', { class: 'muted' }, 'None recorded.'),
     a.episode_id ? animalActions(a, an) : null,
     isAdmin && a.episode_id ? recurringCard(a, asg.data, types, livePlans) : null,
-    a.episode_id ? h('div', { class: 'card' }, h('div', { class: 'title' }, 'Add an observation'), cat, sev, text, err, add)
+    a.episode_id ? h('div', { class: 'card' }, h('div', { class: 'title' }, 'Add an observation'), cat, sev, text, flagRow, err, add)
                  : h('p', { class: 'muted small' }, 'This animal has no current stay, so observations cannot be added.')));
 }
 const backBtn = () => h('button', { class: 'ghost', onclick: () => showAnimals() }, '\u2190 All animals');

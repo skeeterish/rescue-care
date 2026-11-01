@@ -85,7 +85,7 @@ const SUPABASE_KEY = 'sb_publishable_-HN6NaIybL85vhWwHP9ksA_2hpywK1p';
 
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $app = document.getElementById('app');
-const state = { me: null, rescue: null, tz: 'America/Denver', people: {}, tab: 'tasks', dayOffset: 0, reload: null, timer: null, $view: null };
+const state = { me: null, rescue: null, tz: 'America/Denver', people: {}, tab: 'tasks', dayOffset: 0, progress: {}, reload: null, timer: null, $view: null };
 
 const EDIT_WINDOW_MIN = 15;   // volunteers can edit their own entries for this long (the database enforces it)
 
@@ -288,6 +288,8 @@ function taskCard(o, kind, entry) {
       right),
     o.instruction_snapshot ? h('div', { class: 'instr' }, o.instruction_snapshot) : null,
     o.plan_amount != null && kind !== 'done' ? h('div', { class: 'muted small' }, `Planned: ${o.plan_amount}${o.plan_unit ? ' ' + o.plan_unit : ''}`) : null,
+    o.course_total && kind !== 'done' ? h('div', { class: 'muted small' }, o.course_total - (o.course_given || 0) <= 1 ? 'Last dose of this course!' : `${o.course_total - (o.course_given || 0)} doses left in this course (including this one)`) : null,
+    o.course_total && kind === 'done' && (o.course_given || 0) >= o.course_total ? h('div', { class: 'instr' }, `Course complete: ${o.animal_name || 'this animal'} is finished with this medication!`) : null,
     summary ? h('div', { class: 'instr' }, summary,
       h('div', { class: 'muted small' }, `Logged by ${state.people[entry.completed_by] || 'unknown'} at ${fmtTime(entry.logged_at)}`)) : null,
     alerts.map((a) => h('div', { class: 'alert' }, '\u26A0 ' + a)));
@@ -318,7 +320,8 @@ function openLogModal(o, existing = null) {
       ? await db.rpc('edit_care_log', { p_log: existing.id, ...args })
       : await db.rpc('log_task', { p_occurrence: o.occurrence_id, ...args });
     if (r.error) { err.textContent = r.error.message; save.disabled = false; return; }
-    close(); toast(existing ? 'Updated' : 'Logged'); showTasks();
+    const finished = !existing && o.course_total && o.course_total - (o.course_given || 0) <= 1 && choice.status === 'Completed' && choice.value !== 'Refused';
+    close(); toast(finished ? `${o.animal_name || 'This animal'} is finished with this course!` : existing ? 'Updated' : 'Logged'); showTasks();
   } }, existing ? 'Save changes' : 'Save');
   const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } },
     h('div', { class: 'sheet' },
@@ -540,6 +543,7 @@ function carePlansBlock(a, live, drafts, admin, types = []) {
       { key: 'amount', label: 'Amount per task (optional, e.g. 1.5): shown to volunteers and pre-filled when logging', type: 'number' },
       { key: 'unit', label: 'Unit (optional, e.g. cups, tablets)' },
       { key: 'days', label: 'Lasts how many days? (optional; leave empty to continue until ended)', type: 'number' },
+      { key: 'doses', label: 'OR a number of doses (optional): counts from the first dose, e.g. 6 doses twice a day starting tonight ends with the morning dose three days later', type: 'number' },
       { key: 'src', label: 'Source', type: 'select', options: opts(['Rescue Decision', 'Vet Recommendation']) },
       { key: 'tasktype', label: 'Create tasks from this plan: task type (leave empty to keep the current tasks)', type: 'select',
         options: [{ value: '', label: "(don't create tasks)" }, ...types.filter((t) => t.requires_animal).map((t) => ({ value: t.id, label: t.task_name }))],
@@ -552,11 +556,14 @@ function carePlansBlock(a, live, drafts, admin, types = []) {
       { key: 'notes', label: 'Notes', type: 'textarea' }],
     onSubmit: async (v) => {
       const times = [...new Set([v.t1, v.t2, v.t3, v.t4].filter(Boolean))];
+      if (v.days != null && v.doses != null) return { message: 'Use either days or doses, not both.' };
+      if (v.doses != null && !v.tasktype) return { message: 'A dose count needs tasks: choose a task type and times.' };
       if (!!v.tasktype !== times.length > 0) return { message: 'To create tasks, choose a task type and at least one time (or clear both).' };
       const r = await db.rpc('save_care_plan', { p_animal: a.animal_id, p_category: v.cat, p_instructions: v.instr,
         p_amount: v.amount == null ? null : Number(v.amount), p_unit: v.unit, p_source: v.src, p_notes: v.notes, p_draft: !!v.draft,
         p_days: v.days == null ? null : parseInt(v.days, 10), p_task_type: v.tasktype || null, p_assignee: v.who,
-        p_times: times.length ? times : null, p_fresh: !!v.fresh });
+        p_times: times.length ? times : null, p_fresh: !!v.fresh,
+        p_doses: v.doses == null ? null : parseInt(v.doses, 10) });
       if (!r.error) { toast(v.draft ? 'Draft saved' : times.length ? 'Plan and tasks created' : 'Care plan is active'); reloadAnimal(a.animal_id); }
       return r.error;
     } });
@@ -565,10 +572,12 @@ function carePlansBlock(a, live, drafts, admin, types = []) {
     const r = await db.rpc(fn, { p_plan: id });
     if (r.error) toast(r.error.message, true); else { toast(done); reloadAnimal(a.animal_id); }
   };
+  const progressText = (p) => { const g = (state.progress[p.id] || {}).doses_given || 0;
+    return g >= p.total_doses ? `Course complete: ${g} of ${p.total_doses} doses given` : `${g} of ${p.total_doses} doses given, ${p.total_doses - g} to go`; };
   const card = (p, buttons) => h('div', { class: 'card' }, h('div', { class: 'row' },
     h('div', {}, h('span', { class: 'chip' }, p.category), ' ', p.instructions,
       h('div', { class: 'muted small' }, [p.amount != null ? `${p.amount}${p.amount_unit ? ' ' + p.amount_unit : ''} per task` : null,
-        p.times_per_day ? `${p.times_per_day}\u00D7 a day` : null, p.effective_to ? `until ${p.effective_to}` : null,
+        p.times_per_day ? `${p.times_per_day}\u00D7 a day` : null, p.total_doses ? progressText(p) : null, p.effective_to ? `until ${p.effective_to}` : null,
         p.status === 'Draft' ? 'Draft: not active yet' : `approved by ${state.people[p.approved_by] || 'unknown'}, since ${p.effective_from}`].filter(Boolean).join(' \u00B7 '))),
     admin ? buttons : null));
   return h('div', {},
@@ -613,6 +622,12 @@ async function showAnimal(a) {
   if (state.tab !== 'animals') return;
   const bad = [animal, alerts, plans, obs, asg].find((r) => r.error);
   if (bad) return v.replaceChildren(backBtn(), errorBox(bad.error.message));
+  state.progress = {};
+  const courseIds = plans.data.filter((p) => p.total_doses).map((p) => p.id);
+  if (courseIds.length) {
+    const pr = await db.from('care_plan_progress').select('*').in('plan_id', courseIds);
+    for (const x of pr.data || []) state.progress[x.plan_id] = x;
+  }
 
   const an = animal.data;
   const liveAlerts = alerts.data.filter((x) => x.start_date <= today && (!x.expiration_date || x.expiration_date >= today));
